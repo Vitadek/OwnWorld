@@ -1,537 +1,499 @@
 package main
 
 import (
-        "encoding/json"
-        "fmt"
-        "io/ioutil"
-        "math"
-        "math/rand"
-        "os"
-        "sync"
-        "time"
+	"bytes"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"math"
+	"math/rand"
+	"net/http"
+	"os"
+	"sync"
+	"time"
+
+	_ "github.com/mattn/go-sqlite3"
 )
 
+// --- Structs ---
+
 type Colony struct {
-        Name      string         `json:"name"`
-        Location  []int          `json:"location"`
-        Buildings map[string]int `json:"buildings"`
-        BuildingLimit int        `json:"buildingLimit"`
-        FoodCount     int        `json:"food"`
-        WaterCount    int        `json:"water"`
-        MineralCount  int        `json:"minerals"`
-        UraniumCount  int        `json:"uranium"`
-        Population    int        `json:"population"`
-        Happiness     float64    `json:"happiness"`
-}
-
-type Ship struct {
-        Name             string  `json:"name"`
-        Class            string  `json:"Class"`
-        Health           int     `json:"Health"`
-        Description      string  `json:"Description"`
-        PersonnelLimit   int     `json:"Personnel_Limit"`
-        PersonnelMinimum int     `json:"Personnel_Minimum"`
-        CargoLimit       int     `json:"Cargo_Limit"`
-        FuelCapacity     int     `json:"Fuel_Capacity"`
-        FuelEfficiency   float64 `json:"Fuel_Efficiency"`
-        Speed            int     `json:"Speed"`
-        Level            int     `json:"Level"`
-        Damage           int     `json:"Damage"`
-        Price            int     `json:"Price"`
-        Amount           int     `json:"Amount"`
-}
-
-type FleetShip struct {
-        Name   string `json:"name"`
-        Amount int    `json:"amount"`
-}
-
-type Mission struct {
-        MissionNumber       int      `json:"Mission_Number"`
-        Fleets              []string `json:"fleets"`
-        Location            []int    `json:"Location"`
-        DestinationLocation []int    `json:"DestinationLocation"`
-        DistanceTraveled    int      `json:"Distance_Traveled"`
-        DestinationDistance int      `json:"Destination_Distance"`
-        MissionType         string   `json:"Mission_Type"`
-        MissionSuccess      bool     `json:"Mission_Success"`
+	ID            int            `json:"id"`
+	OwnerID       int            `json:"owner_id"`
+	Name          string         `json:"name"`
+	Location      []int          `json:"location"`
+	Buildings     map[string]int `json:"buildings"`
+	
+	// Stats
+	Population    int            `json:"population"`
+	Food          int            `json:"food"`
+	Water         int            `json:"water"`
+	
+	// Resources
+	Iron          int            `json:"iron"`
+	Diamond       int            `json:"diamond"`
+	Platinum      int            `json:"platinum"`
+	Starfuel      int            `json:"starfuel"`
+	
+	// Society
+	Health        float64        `json:"health"`
+	Intelligence  float64        `json:"intelligence"`
+	Crime         float64        `json:"crime"`
+	Happiness     float64        `json:"happiness"`
+	
+	// Defense
+	DefenseRating int            `json:"defense_rating"`
 }
 
 type Fleet struct {
-        Name     string      `json:"name"`
-        Ships    []FleetShip `json:"ships"`
-        Mission  []Mission   `json:"Mission"`
-        Location []int       `json:"Location"`
+	ID           int    `json:"id"`
+	OriginColony int    `json:"origin_colony"`
+	Status       string `json:"status"`
+	
+	// Composition
+	Fighters     int `json:"fighters"`
+	Probes       int `json:"probes"`
+	Colonizers   int `json:"colonizers"`
+	Destroyers   int `json:"destroyers"`
 }
 
-type GameState struct {
-        Colonies       []Colony `json:"colonies"`
-        ResearchPoints int      `json:"researchPoints"`
-        TicksPassed    int      `json:"ticksPassed"`
-        StarCoins      int      `json:"starCoins"`
-        TaxRate        float64  `json:"taxRate"`
-        Ships          []Ship   `json:"ships"`
-        Fleets         []Fleet  `json:"fleets"`
-        Missions       []Mission `json:"Missions"`
+type IntelReport struct {
+	ServerUUID string   `json:"server_uuid"`
+	Location   []int    `json:"location"` // The remote server's coordinates
+	Colonies   []Colony `json:"colonies"`
+	Peers      []string `json:"peers"`    // Gossip: Other networks this server knows
 }
 
-var state GameState
-var stateLock sync.Mutex
-var fileLock sync.Mutex
+// --- Globals ---
 
-func loadShips(shipFilename string) ([]Ship, error) {
-        data, err := ioutil.ReadFile(shipFilename)
-        if err != nil {
-                return nil, err
-        }
+var (
+	ServerUUID string
+	ServerLoc  []int // [x, y, z] Deterministic location
+	dbFile     = "./data/ownworld.db"
+	db         *sql.DB
+	intelMap   = make(map[string]IntelReport) // Cache of scanned worlds
+	stateLock  sync.Mutex
+)
 
-        var ships []Ship
-        err = json.Unmarshal(data, &ships)
-        return ships, err
+// --- Configuration ---
+
+var ShipCosts = map[string]map[string]int{
+	"probe":     {"iron": 50, "starfuel": 10},
+	"fighter":   {"iron": 500, "diamond": 50, "starfuel": 50},
+	"colonizer": {"iron": 5000, "food": 5000, "water": 5000, "starfuel": 500},
+	"destroyer": {"iron": 10000, "diamond": 5000, "platinum": 1000, "starfuel": 2000},
 }
 
-func saveState(filename string) error {
-        fileLock.Lock()
-        defer fileLock.Unlock()
-
-        data, err := json.MarshalIndent(state, "", "  ") // Pretty-print JSON
-        if err != nil {
-                return err
-        }
-
-        tempFilename := filename + ".tmp"
-        if err := ioutil.WriteFile(tempFilename, data, 0644); err != nil {
-                return err
-        }
-
-        return os.Rename(tempFilename, filename)
+var BuildingCosts = map[string]map[string]int{
+	"farm":            {"iron": 10},
+	"well":            {"iron": 10},
+	"school":          {"iron": 50},
+	"iron_mine":       {"food": 500}, // Costs Food (Labor)
+	"police_station":  {"iron": 200},
+	"diamond_mine":    {"iron": 1000},
+	"hospital":        {"iron": 500, "diamond": 10},
+	"platinum_mine":   {"iron": 2000, "diamond": 500},
+	"defense_battery": {"iron": 2000, "diamond": 100},
+	"rd_lab":          {"diamond": 200, "platinum": 50},
+	"starfuel_refinery":{"iron": 10000, "diamond": 2000, "platinum": 1000},
 }
 
-func loadState(filename string) error {
-        fileLock.Lock()
-        defer fileLock.Unlock()
+// --- DB & Core Logic ---
 
-        data, err := ioutil.ReadFile(filename)
-        if err != nil {
-                return err
-        }
+func initDB() {
+	os.MkdirAll("./data", 0755)
+	var err error
+	db, err = sql.Open("sqlite3", dbFile)
+	if err != nil { panic(err) }
 
-        return json.Unmarshal(data, &state)
+	schema := `
+	CREATE TABLE IF NOT EXISTS users (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		username TEXT UNIQUE, password_hash TEXT, star_coins INTEGER DEFAULT 1000
+	);
+	CREATE TABLE IF NOT EXISTS colonies (
+		id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, name TEXT,
+		loc_x INTEGER, loc_y INTEGER, loc_z INTEGER, buildings_json TEXT,
+		
+		population INTEGER DEFAULT 1000,
+		food INTEGER DEFAULT 5000, water INTEGER DEFAULT 5000,
+		iron INTEGER DEFAULT 500, diamond INTEGER DEFAULT 0, 
+		platinum INTEGER DEFAULT 0, starfuel INTEGER DEFAULT 0,
+		
+		health REAL DEFAULT 100.0, intelligence REAL DEFAULT 50.0, 
+		crime REAL DEFAULT 0.0, happiness REAL DEFAULT 100.0
+	);
+	CREATE TABLE IF NOT EXISTS fleets (
+		id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, origin_colony INTEGER,
+		status TEXT,
+		fighters INTEGER, probes INTEGER, colonizers INTEGER, destroyers INTEGER
+	);
+	`
+	if _, err := db.Exec(schema); err != nil { panic(err) }
+	
+	// Deterministic Identity & Location
+	ServerUUID = fmt.Sprintf("sector-%d", time.Now().UnixNano())
+	
+	// Calculate unique Galactic Coordinates from the UUID hash
+	hash := sha256.Sum256([]byte(ServerUUID))
+	// Use first 3 bytes for X, Y, Z
+	x := int(hash[0])*100 + int(hash[1])
+	y := int(hash[2])*100 + int(hash[3])
+	z := int(hash[4])*100 + int(hash[5])
+	ServerLoc = []int{x, y, z}
 }
 
-func missionDistance(startLocation, endLocation []int) int {
-        squareDelta := func(a, b int) int {
-                return (a - b) * (a - b)
-        }
+func tickWorld() {
+	stateLock.Lock()
+	defer stateLock.Unlock()
 
-        return int(math.Sqrt(float64(squareDelta(startLocation[0], endLocation[0]) +
-                squareDelta(startLocation[1], endLocation[1]) +
-                squareDelta(startLocation[2], endLocation[2]))))
+	rows, _ := db.Query(`SELECT id, population, food, water, buildings_json, 
+		iron, diamond, platinum, starfuel, 
+		health, intelligence, crime, happiness FROM colonies`)
+	
+	type ColUpdate struct {
+		ID int; Pop, Food, Water, Iron, Dia, Plat, Fuel int
+		Health, Intel, Crime, Happy float64
+	}
+	var updates []ColUpdate
+
+	for rows.Next() {
+		var u ColUpdate
+		var bJson string
+		rows.Scan(&u.ID, &u.Pop, &u.Food, &u.Water, &bJson, 
+			&u.Iron, &u.Dia, &u.Plat, &u.Fuel, 
+			&u.Health, &u.Intel, &u.Crime, &u.Happy)
+		
+		var b map[string]int
+		json.Unmarshal([]byte(bJson), &b)
+
+		// Efficiency & Production
+		eff := 1.0 + (float64(b["rd_lab"]) * (u.Intel / 200.0))
+
+		u.Food += int(float64(b["farm"]*100) * eff)
+		u.Water += int(float64(b["well"]*100) * eff)
+		u.Iron += int(float64(b["iron_mine"]*10) * eff)
+		u.Dia += int(float64(b["diamond_mine"]*5) * eff)
+		u.Plat += int(float64(b["platinum_mine"]*2) * eff)
+		u.Fuel += int(float64(b["starfuel_refinery"]*1) * eff)
+
+		// Society stats
+		targetCrime := (float64(u.Pop)/1000.0) - (float64(b["police_station"])*2.0)
+		if targetCrime < 0 { targetCrime = 0 }
+		u.Crime += (targetCrime - u.Crime) * 0.1 
+
+		crowding := float64(u.Pop) / (5000.0 * math.Log10(float64(u.Pop)+10))
+		healing := float64(b["hospital"]) * 1.5 * (1.0 + u.Intel/100.0)
+		targetHealth := u.Health - crowding + healing
+		if targetHealth > 100 { targetHealth = 100 }; if targetHealth < 0 { targetHealth = 0 }
+		u.Health += (targetHealth - u.Health) * 0.1
+
+		targetHappy := u.Health - (u.Crime * 5.0)
+		if u.Food < u.Pop { targetHappy -= 20 }
+		if u.Water < u.Pop { targetHappy -= 20 }
+		if targetHappy > 100 { targetHappy = 100 }; if targetHappy < 0 { targetHappy = 0 }
+		u.Happy += (targetHappy - u.Happy) * 0.1
+
+		// Consumption (Reduced)
+		consumption := int(float64(u.Pop) / 3.0)
+		if consumption < 1 && u.Pop > 0 { consumption = 1 }
+
+		u.Food -= consumption
+		u.Water -= consumption
+
+		if u.Food < 0 { u.Food = 0 }; if u.Water < 0 { u.Water = 0 }
+
+		// Growth / Death
+		logDampener := math.Log(float64(u.Pop) + 10.0)
+		
+		if u.Happy > 60 && u.Food > 0 {
+			growth := float64(u.Pop) * 0.01 * (u.Happy/100.0)
+			u.Pop += int(growth / logDampener)
+		} else if u.Food == 0 || u.Water == 0 {
+			death := float64(u.Pop) * 0.02
+			u.Pop -= int(death / logDampener)
+		}
+		if u.Pop < 1 { u.Pop = 1 }
+
+		updates = append(updates, u)
+	}
+	rows.Close()
+
+	tx, _ := db.Begin()
+	stmt, _ := tx.Prepare(`UPDATE colonies SET population=?, food=?, water=?, iron=?, diamond=?, platinum=?, starfuel=?, health=?, intelligence=?, crime=?, happiness=? WHERE id=?`)
+	for _, u := range updates {
+		stmt.Exec(u.Pop, u.Food, u.Water, u.Iron, u.Dia, u.Plat, u.Fuel, u.Health, u.Intel, u.Crime, u.Happy, u.ID)
+	}
+	stmt.Close(); tx.Commit()
 }
 
-func initializeState() {
-        rand.Seed(time.Now().UnixNano())
-        state = GameState{
-                Colonies: []Colony{
-                        {
-                                Name:     "New Eden",
-                                Location: []int{100, 50, 30},
-                                Buildings: map[string]int{
-                                        "farm": 1, "well": 1, "mine": 1, "uranium_mine": 1, "lab": 1,
-                                },
-                                BuildingLimit: 1000,
-                                FoodCount:     100,
-                                WaterCount:    100,
-                                MineralCount:  100,
-                                UraniumCount:  0,
-                                Population:    100,
-                                Happiness:     50,
-                        },
-                },
-                ResearchPoints: 0,
-                StarCoins:      100000,
-                TaxRate:        0.1,
-                Ships: []Ship{
-                        {
-                                Name:             "Explorite",
-                                Class:            "Explorite",
-                                Health:           50,
-                                Description:      "A simple exploring machine, no pilot needed",
-                                PersonnelLimit:   0,
-                                PersonnelMinimum: 0,
-                                CargoLimit:       0,
-                                FuelCapacity:     100,
-                                FuelEfficiency:   1,
-                                Speed:            rand.Intn(20) + 80,
-                                Level:            1,
-                                Damage:           0,
-                                Price:            1000,
-                                Amount:           5,
-                        },
-                        {
-                                Name:             "Enforcer",
-                                Class:            "Enforcer",
-                                Health:           500,
-                                Description:      "An air combat machine",
-                                PersonnelLimit:   4,
-                                PersonnelMinimum: 4,
-                                CargoLimit:       0,
-                                FuelCapacity:     25,
-                                FuelEfficiency:   1,
-                                Speed:            rand.Intn(20) + 50,
-                                Level:            1,
-                                Damage:           100,
-                                Price:            5000,
-                                Amount:           5,
-                        },
-                        {
-                                Name:             "Pioneer",
-                                Class:            "Pioneer",
-                                Health:           5000,
-                                Description:      "A ship to create new settlements or to transfer settlers",
-                                PersonnelLimit:   1000,
-                                PersonnelMinimum: 4,
-                                CargoLimit:       0,
-                                FuelCapacity:     5000,
-                                FuelEfficiency:   0.5,
-                                Speed:            rand.Intn(20) + 20,
-                                Level:            1,
-                                Damage:           25,
-                                Price:            10000,
-                                Amount:           1,
-                        },
-                },
-                Fleets: []Fleet{
-                        {
-                                Name: "Gondor",
-                                Ships: []FleetShip{
-                                        {
-                                                Name:   "Enforcer",
-                                                Amount: 1,
-                                        },
-                                        {
-                                                Name:   "Explorite",
-                                                Amount: 1,
-                                        },
-                                },
-                                Mission:  []Mission{},
-                                Location: []int{100, 50, 30},
-                        },
-                },
-                Missions: []Mission{
-                        {
-                                MissionNumber:       1,
-                                Fleets:              []string{"Gondor"},
-                                DestinationLocation: []int{150, 80, 90},
-                                DistanceTraveled:    0,
-                                DestinationDistance: 0,
-                                MissionType:         "Exploration",
-                                MissionSuccess:      false,
-                        },
-                },
-        }
+// --- Handlers ---
 
-        // Assign the first mission to the Gondor fleet
-        if len(state.Fleets) > 0 {
-                fleet := &state.Fleets[0]
-                fleet.Mission = append(fleet.Mission, state.Missions[0])
+func handleRegister(w http.ResponseWriter, r *http.Request) {
+	var req struct{Username, Password string}; json.NewDecoder(r.Body).Decode(&req)
+	
+	hash := sha256.Sum256([]byte(req.Password)); hashStr := hex.EncodeToString(hash[:])
+	res, err := db.Exec("INSERT INTO users (username, password_hash) VALUES (?,?)", req.Username, hashStr)
+	if err != nil { http.Error(w, "Username taken", 400); return }
+	uid, _ := res.LastInsertId()
 
-                // Calculate and assign the correct destination distance for each mission
-                fleet.Mission[0].DestinationDistance = missionDistance(fleet.Location, state.Missions[0].DestinationLocation)
-                state.Missions[0].DestinationDistance = fleet.Mission[0].DestinationDistance
-        }
+	// Starter Colony
+	bJson, _ := json.Marshal(map[string]int{"farm":10, "well":10, "school":1, "iron_mine":5})
+	
+	resCol, _ := db.Exec(`INSERT INTO colonies (user_id, name, population, food, water, iron, buildings_json, loc_x, loc_y) 
+		VALUES (?, ?, 1000, 20000, 20000, 1000, ?, ?, ?)`, 
+		uid, req.Username+"'s Prime", string(bJson), rand.Intn(100), rand.Intn(100))
+	
+	// Create Starter Fleet (1 Probe)
+	colID, _ := resCol.LastInsertId()
+	db.Exec(`INSERT INTO fleets (user_id, origin_colony, status, fighters, probes, colonizers, destroyers) 
+		VALUES (?, ?, 'IDLE', 0, 1, 0, 0)`, uid, colID)
+	
+	json.NewEncoder(w).Encode(map[string]int{"user_id": int(uid)})
 }
 
-func updateDistanceTraveled(mission *Mission, fleet *Fleet) {
-        // Find the slowest ship in the fleet
-        slowestSpeed := int(^uint(0) >> 1)
-        for _, fleetShip := range fleet.Ships {
-                for _, ship := range state.Ships {
-                        if ship.Name == fleetShip.Name {
-                                speed := ship.Speed
-                                if speed < slowestSpeed {
-                                        slowestSpeed = speed
-                                }
-                        }
-                }
-        }
+func handleBuild(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ColonyID int `json:"colony_id"`
+		Structure string `json:"structure"`
+		Amount int `json:"amount"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON", 400); return
+	}
+	if req.Amount < 1 { req.Amount = 1 }
 
-        // Only update distances and position if the mission is not yet successful
-        if !mission.MissionSuccess {
-                // Calculate the total distance remaining
-                totalDistanceRemaining := missionDistance(fleet.Location, mission.DestinationLocation)
+	unitCost := BuildingCosts[req.Structure]
+	if unitCost == nil { http.Error(w, "Unknown Structure", 400); return }
 
-                if totalDistanceRemaining == 0 {
-                        mission.MissionSuccess = true
-                        fleet.Location = mission.DestinationLocation
-                        return
-                }
+	var c Colony; var bJson string
+	err := db.QueryRow("SELECT buildings_json, iron, diamond, platinum, food FROM colonies WHERE id=?", req.ColonyID).Scan(&bJson, &c.Iron, &c.Diamond, &c.Platinum, &c.Food)
+	if err != nil { http.Error(w, "Colony not found", 404); return }
 
-                // Calculate proportional movement for each coordinate
-                for i := 0; i < len(fleet.Location); i++ {
-                        direction := mission.DestinationLocation[i] - fleet.Location[i]
-                        distanceToMove := float64(slowestSpeed) * (float64(direction) / float64(totalDistanceRemaining))
+	totalIron := unitCost["iron"] * req.Amount
+	totalDia := unitCost["diamond"] * req.Amount
+	totalPlat := unitCost["platinum"] * req.Amount
+	totalFood := unitCost["food"] * req.Amount 
 
-                        // Update the location considering the direction and clamping to the destination
-                        newPosition := fleet.Location[i] + int(math.Round(distanceToMove))
-                        if direction > 0 && newPosition > mission.DestinationLocation[i] {
-                                fleet.Location[i] = mission.DestinationLocation[i]
-                        } else if direction < 0 && newPosition < mission.DestinationLocation[i] {
-                                fleet.Location[i] = mission.DestinationLocation[i]
-                        } else {
-                                fleet.Location[i] = newPosition
-                        }
-                }
+	if c.Iron < totalIron || c.Diamond < totalDia || c.Platinum < totalPlat || c.Food < totalFood {
+		http.Error(w, "Insufficient Funds", 400); return
+	}
 
-                // Update distance traveled
-                if slowestSpeed < totalDistanceRemaining {
-                        mission.DistanceTraveled += slowestSpeed
-                } else {
-                        mission.DistanceTraveled += totalDistanceRemaining
-                }
-
-                // Check if mission is successful
-                if isLocationEqual(fleet.Location, mission.DestinationLocation) {
-                        mission.MissionSuccess = true
-                }
-        }
+	db.Exec("UPDATE colonies SET iron=iron-?, diamond=diamond-?, platinum=platinum-?, food=food-? WHERE id=?", totalIron, totalDia, totalPlat, totalFood, req.ColonyID)
+	
+	var b map[string]int; json.Unmarshal([]byte(bJson), &b)
+	b[req.Structure] += req.Amount
+	newJson, _ := json.Marshal(b)
+	db.Exec("UPDATE colonies SET buildings_json=? WHERE id=?", string(newJson), req.ColonyID)
+	
+	w.Write([]byte(fmt.Sprintf("Built %d %s", req.Amount, req.Structure)))
 }
 
-// Helper function to compare two location slices
-func isLocationEqual(loc1, loc2 []int) bool {
-        if len(loc1) != len(loc2) {
-                return false
-        }
-        for i := range loc1 {
-                if loc1[i] != loc2[i] {
-                        return false
-                }
-        }
-        return true
+// Updated handleShipBuild to accept Amount
+func handleShipBuild(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ColonyID int `json:"colony_id"`
+		ShipType string `json:"ship_type"`
+		Amount   int    `json:"amount"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	if req.Amount < 1 { req.Amount = 1 }
+
+	cost := ShipCosts[req.ShipType]
+	if cost == nil { http.Error(w, "Unknown Ship", 400); return }
+
+	var c Colony
+	err := db.QueryRow("SELECT iron, diamond, platinum, starfuel, food, water FROM colonies WHERE id=?", req.ColonyID).Scan(&c.Iron, &c.Diamond, &c.Platinum, &c.Starfuel, &c.Food, &c.Water)
+	if err != nil { http.Error(w, "Colony not found", 404); return }
+
+	// Calc Totals
+	tIron := cost["iron"] * req.Amount
+	tDia := cost["diamond"] * req.Amount
+	tPlat := cost["platinum"] * req.Amount
+	tFuel := cost["starfuel"] * req.Amount
+	tFood := cost["food"] * req.Amount
+	tWater := cost["water"] * req.Amount
+
+	if c.Iron < tIron || c.Diamond < tDia || c.Platinum < tPlat || c.Starfuel < tFuel || c.Food < tFood || c.Water < tWater {
+		http.Error(w, "Insufficient Resources", 400); return
+	}
+
+	db.Exec("UPDATE colonies SET iron=iron-?, diamond=diamond-?, platinum=platinum-?, starfuel=starfuel-?, food=food-?, water=water-? WHERE id=?",
+		tIron, tDia, tPlat, tFuel, tFood, tWater, req.ColonyID)
+
+	var fid int
+	err = db.QueryRow("SELECT id FROM fleets WHERE origin_colony=? AND status='IDLE'", req.ColonyID).Scan(&fid)
+	if err == sql.ErrNoRows {
+		res, _ := db.Exec("INSERT INTO fleets (origin_colony, status, fighters, probes, colonizers, destroyers) VALUES (?, 'IDLE', 0,0,0,0)", req.ColonyID)
+		id64, _ := res.LastInsertId(); fid = int(id64)
+	}
+
+	colName := fmt.Sprintf("%ss", req.ShipType)
+	db.Exec(fmt.Sprintf("UPDATE fleets SET %s = %s + ? WHERE id=?", colName, colName), req.Amount, fid)
+	
+	w.Write([]byte(fmt.Sprintf("Built %d %s", req.Amount, req.ShipType)))
 }
 
-func updateState() {
-        stateLock.Lock()
-        defer stateLock.Unlock()
+func handleFleetLaunch(w http.ResponseWriter, r *http.Request) {
+	var req struct{FleetID int; TargetURL string}; json.NewDecoder(r.Body).Decode(&req)
 
-        if err := loadState("../data/game_state.json"); err != nil {
-                fmt.Println("Error loading game state:", err)
-                return
-        }
+	var f Fleet
+	err := db.QueryRow("SELECT fighters, probes, colonizers, destroyers FROM fleets WHERE id=?", req.FleetID).Scan(&f.Fighters, &f.Probes, &f.Colonizers, &f.Destroyers)
+	if err != nil { http.Error(w, "Fleet not found", 404); return }
 
-        for index, colony := range state.Colonies {
-                fmt.Printf("Current State Before Update for Colony %s:\n%+v\n", colony.Name, state.Colonies[index])
-                updateColonyState(&state.Colonies[index])
-        }
+	payload := map[string]interface{}{"origin_uuid": ServerUUID, "fleet": f}
+	data, _ := json.Marshal(payload)
+	resp, err := http.Post(req.TargetURL+"/federation/receive_fleet", "application/json", bytes.NewBuffer(data))
+	
+	if err != nil { http.Error(w, "Target Unreachable", 500); return }
 
-        // Update missions for each fleet
-        for _, fleet := range state.Fleets {
-                for i := range fleet.Mission {
-                        updateDistanceTraveled(&fleet.Mission[i], &fleet)
-                }
-        }
+	var result map[string]interface{}
+	json.NewDecoder(resp.Body).Decode(&result)
 
-        // Synchronize mission status back to the global state
-        for i := range state.Missions {
-                for _, fleet := range state.Fleets {
-                        for _, mission := range fleet.Mission {
-                                if state.Missions[i].MissionNumber == mission.MissionNumber {
-                                        state.Missions[i] = mission
-                                }
-                        }
-                }
-        }
-
-        state.TicksPassed++
-
-        // Pretty-print updated state for readability
-        fmt.Println("Updated State:")
-        jsonData, _ := json.MarshalIndent(state, "", "  ")
-        fmt.Println(string(jsonData))
-
-        if err := saveState("../data/game_state.json"); err != nil {
-                fmt.Println("Could not save game state:", err)
-        } else {
-                fmt.Println("Game state updated and saved.")
-        }
+	if f.Probes > 0 {
+		if intel, ok := result["intel"]; ok {
+			bits, _ := json.Marshal(intel)
+			var report IntelReport
+			json.Unmarshal(bits, &report)
+			stateLock.Lock(); intelMap[report.ServerUUID] = report; stateLock.Unlock()
+		}
+	}
+	db.Exec("DELETE FROM fleets WHERE id=?", req.FleetID)
+	json.NewEncoder(w).Encode(result)
 }
 
-func updateColonyState(colony *Colony) {
-        oldPopulation := colony.Population
-        oldFoodCount := colony.FoodCount
-        oldWaterCount := colony.WaterCount
-        
-        updatePopulation(colony)
-        consumeResources(colony)
+func handleReceiveFleet(w http.ResponseWriter, r *http.Request) {
+	var req struct { OriginUUID string; Fleet Fleet }; json.NewDecoder(r.Body).Decode(&req)
+	
+	resp := map[string]interface{}{"message": "Fleet Detected"}
 
-        happinessModifier := 1.0
-        if colony.Happiness > 50 {
-                happinessModifier += (colony.Happiness - 50) / 100
-        } else {
-                happinessModifier -= (50 - colony.Happiness) / 100
-        }
+	if req.Fleet.Probes > 0 {
+		rows, _ := db.Query("SELECT id, name, population, buildings_json FROM colonies")
+		var cols []Colony
+		for rows.Next() {
+			var c Colony; var bJson string
+			rows.Scan(&c.ID, &c.Name, &c.Population, &bJson)
+			var b map[string]int; json.Unmarshal([]byte(bJson), &b)
+			c.DefenseRating = b["defense_battery"] * 1000
+			cols = append(cols, c)
+		}
+		
+		var peers []string
+		stateLock.Lock()
+		for uuid := range intelMap { peers = append(peers, uuid) }
+		stateLock.Unlock()
 
-        taxRevenue := int(float64(colony.Population) * state.TaxRate * happinessModifier)
-        state.StarCoins += taxRevenue
+		resp["intel"] = IntelReport{
+			ServerUUID: ServerUUID, 
+			Location: ServerLoc,
+			Colonies: cols,
+			Peers: peers,
+		}
+		resp["scan_result"] = fmt.Sprintf("Sector Mapped. Coordinates: %v. Peers: %d", ServerLoc, len(peers))
+	}
 
-        // Additional logs for colony
-        fmt.Printf("Population Growth for %s this tick: %d\n", colony.Name, colony.Population-oldPopulation)
-        fmt.Printf("Food Consumed for %s this tick: %d\n", colony.Name, oldFoodCount-colony.FoodCount)
-        fmt.Printf("Water Consumed for %s this tick: %d\n", colony.Name, oldWaterCount-colony.WaterCount)
+	if req.Fleet.Colonizers > 0 {
+		bJson, _ := json.Marshal(map[string]int{"farm":5, "well":5})
+		db.Exec(`INSERT INTO colonies (user_id, name, population, food, water, buildings_json) VALUES (0, 'Outpost of '+?, 500, 2000, 2000, ?)`, req.OriginUUID, string(bJson))
+		resp["colonization"] = "Outpost Established."
+	}
+	
+	if req.Fleet.Destroyers > 0 {
+		var tid, pop int; var bJson string
+		err := db.QueryRow("SELECT id, population, buildings_json FROM colonies ORDER BY RANDOM() LIMIT 1").Scan(&tid, &pop, &bJson)
+		if err == nil {
+			var b map[string]int; json.Unmarshal([]byte(bJson), &b)
+			def := b["defense_battery"] * 2000
+			atk := req.Fleet.Destroyers * 2500
+			if atk > def {
+				db.Exec("DELETE FROM colonies WHERE id=?", tid)
+				resp["combat_log"] = fmt.Sprintf("VICTORY. Colony Destroyed (Atk %d vs Def %d)", atk, def)
+			} else {
+				resp["combat_log"] = fmt.Sprintf("DEFEAT. Fleet Intercepted (Atk %d vs Def %d)", atk, def)
+			}
+		} else {
+			resp["combat_log"] = "No targets found."
+		}
+	}
+
+	json.NewEncoder(w).Encode(resp)
 }
 
-func updatePopulation(colony *Colony) {
-        foodRatio := float64(colony.FoodCount) / float64(colony.Population)
-        waterRatio := float64(colony.WaterCount) / float64(colony.Population)
+func handleState(w http.ResponseWriter, r *http.Request) {
+	uidStr := r.Header.Get("X-User-ID")
+	var uid int; fmt.Sscanf(uidStr, "%d", &uid)
 
-        baseGrowth := 10
-        resourceModifier := 1.0
+	type StateResp struct {
+		ServerUUID string; ServerLoc []int
+		Intel map[string]IntelReport
+		MyColonies []Colony; MyFleets []Fleet
+		Costs map[string]map[string]int // Send config to client
+		ShipCosts map[string]map[string]int
+	}
+	resp := StateResp{
+		ServerUUID: ServerUUID, 
+		ServerLoc: ServerLoc, 
+		Intel: intelMap,
+		Costs: BuildingCosts,
+		ShipCosts: ShipCosts,
+	}
 
-        if foodRatio >= 1 && waterRatio >= 1 {
-                resourceModifier += 0.1
+	rows, _ := db.Query(`SELECT id, name, buildings_json, population, food, water, 
+		iron, diamond, platinum, starfuel, health, intelligence, crime, happiness 
+		FROM colonies WHERE user_id=?`, uid)
+	for rows.Next() {
+		var c Colony; var bJson string
+		rows.Scan(&c.ID, &c.Name, &bJson, &c.Population, &c.Food, &c.Water,
+			&c.Iron, &c.Diamond, &c.Platinum, &c.Starfuel, 
+			&c.Health, &c.Intelligence, &c.Crime, &c.Happiness)
+		json.Unmarshal([]byte(bJson), &c.Buildings)
+		resp.MyColonies = append(resp.MyColonies, c)
+	}
+	rows.Close()
 
-                if foodRatio >= 5 && waterRatio >= 5 {
-                        resourceModifier += 0.5
-                        colony.Happiness += 5
-                }
-        } else {
-                fmt.Printf("Population growth halted due to resource scarcity in %s.\n", colony.Name)
-                baseGrowth = 0
-        }
+	fRows, _ := db.Query("SELECT id, origin_colony, fighters, probes, colonizers, destroyers FROM fleets WHERE origin_colony IN (SELECT id FROM colonies WHERE user_id=?)", uid)
+	for fRows.Next() {
+		var f Fleet
+		fRows.Scan(&f.ID, &f.OriginColony, &f.Fighters, &f.Probes, &f.Colonizers, &f.Destroyers)
+		resp.MyFleets = append(resp.MyFleets, f)
+	}
 
-        baseHappinessRecovery := 1.0
-        colony.Happiness += baseHappinessRecovery
-
-        if colony.Happiness > 100 {
-                colony.Happiness = 100
-        }
-        if colony.Happiness < 0 {
-                colony.Happiness = 0
-        }
-
-        happinessModifier := 1.0
-        if colony.Happiness > 75 {
-                happinessModifier += (colony.Happiness / 100)
-        }
-
-        colony.Population += int(float64(baseGrowth) * resourceModifier * happinessModifier)
+	json.NewEncoder(w).Encode(resp)
 }
 
-func consumeResources(colony *Colony) {
-        // Record the amount of resources consumed
-        foodConsumed := colony.Population
-        waterConsumed := colony.Population
-
-        colony.FoodCount -= foodConsumed
-        if colony.FoodCount < 0 {
-                colony.FoodCount = 0
-        }
-
-        colony.WaterCount -= waterConsumed
-        if colony.WaterCount < 0 {
-                colony.WaterCount = 0
-        }
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-User-ID")
+		if r.Method == "OPTIONS" { return }
+		next.ServeHTTP(w, r)
+	})
 }
 
-func viewGameState() {
-        stateLock.Lock()
-        defer stateLock.Unlock()
-
-        for _, colony := range state.Colonies {
-                fmt.Printf("Colony: %s\n", colony.Name)
-                fmt.Printf("Location: %v\n", colony.Location)
-                fmt.Printf("Building Limit: %d\n", colony.BuildingLimit)
-                fmt.Printf("Population: %d\n", colony.Population)
-                fmt.Printf("Happiness: %.2f\n", colony.Happiness)
-                fmt.Printf("Food Count: %d\n", colony.FoodCount)
-                fmt.Printf("Water Count: %d\n", colony.WaterCount)
-                fmt.Println("-------------------------")
-        }
-}
-
-func viewFleets() {
-        stateLock.Lock()
-        defer stateLock.Unlock()
-
-        fmt.Println("Current Fleets:")
-        if len(state.Fleets) == 0 {
-                fmt.Println("No fleets available.")
-                return
-        }
-
-        for _, fleet := range state.Fleets {
-                fmt.Printf("Fleet Name: %s\n", fleet.Name)
-                fmt.Println("Ships in Fleet:")
-                for _, ship := range fleet.Ships {
-                        fmt.Printf("  - Ship Name: %s, Amount: %d\n", ship.Name, ship.Amount)
-                }
-                fmt.Println("Missions:")
-                for _, mission := range fleet.Mission {
-                        fmt.Printf("  - Mission Number: %d, Type: %s\n", mission.MissionNumber, mission.MissionType)
-                        fmt.Printf("    Destination: %v, DistanceTraveled: %d, DestinationDistance: %d\n",
-                                mission.DestinationLocation, mission.DistanceTraveled, mission.DestinationDistance)
-                        fmt.Printf("    Success: %v\n", mission.MissionSuccess)
-                }
-                fmt.Printf("Current Location: %v\n", fleet.Location)
-                fmt.Println("-------------------------")
-        }
-}
-
-func viewMissions() {
-        stateLock.Lock()
-        defer stateLock.Unlock()
-
-        fmt.Println("Active Missions:")
-        if len(state.Missions) == 0 {
-                fmt.Println("No missions available.")
-                return
-        }
-
-        for _, mission := range state.Missions {
-                fmt.Printf("Mission Number: %d\n", mission.MissionNumber)
-                fmt.Printf("Mission Type: %s\n", mission.MissionType)
-                fmt.Println("Involved Fleets:")
-                for _, fleetName := range mission.Fleets {
-                        fmt.Printf("  - Fleet Name: %s\n", fleetName)
-                }
-                fmt.Printf("Destination Location: %v\n", mission.DestinationLocation)
-                fmt.Printf("Distance Traveled: %d\n", mission.DistanceTraveled)
-                fmt.Printf("Destination Distance: %d\n", mission.DestinationDistance)
-                fmt.Printf("Mission Success: %v\n", mission.MissionSuccess)
-                fmt.Println("-------------------------")
-        }
+func handleLogin(w http.ResponseWriter, r *http.Request) {
+	var req struct{Username, Password string}; json.NewDecoder(r.Body).Decode(&req)
+	hash := sha256.Sum256([]byte(req.Password)); hashStr := hex.EncodeToString(hash[:])
+	var id int; err := db.QueryRow("SELECT id FROM users WHERE username=? AND password_hash=?", req.Username, hashStr).Scan(&id)
+	if err!=nil { http.Error(w,"Fail",401); return }
+	json.NewEncoder(w).Encode(map[string]int{"user_id": id})
 }
 
 func main() {
-        fmt.Println("Welcome to the World Simulation Game!")
+	initDB()
+	go func() { for range time.Tick(5 * time.Second) { tickWorld() } }()
 
-        filename := "../data/game_state.json"
+	mux := http.NewServeMux()
+	mux.HandleFunc("/login", handleLogin)
+	mux.HandleFunc("/register", handleRegister)
+	mux.HandleFunc("/state", handleState)
+	mux.HandleFunc("/build", handleBuild)
+	mux.HandleFunc("/build/ship", handleShipBuild)
+	mux.HandleFunc("/fleet/launch", handleFleetLaunch)
+	mux.HandleFunc("/federation/receive_fleet", handleReceiveFleet)
 
-        if _, err := os.Stat(filename); os.IsNotExist(err) {
-                fmt.Println("No existing game state found, initializing new game state.")
-                initializeState()
-                if err := saveState(filename); err != nil {
-                        fmt.Println("Could not save initial game state:", err)
-                }
-        } else {
-                fmt.Println("Existing game state found, loading...")
-                if err := loadState(filename); err != nil {
-                        fmt.Println("Could not load game state:", err)
-                } else {
-                        fmt.Println("Loaded existing game state successfully!")
-                }
-        }
-
-        ticker := time.NewTicker(10 * time.Second)
-        defer ticker.Stop()
-
-        for {
-                select {
-                case <-ticker.C:
-                        updateState()
-                        viewGameState() // Display game state including colony information
-                        viewFleets()    // Display fleets
-                        viewMissions()  // Display missions
-                }
-        }
-} 
+	fmt.Printf("World %s (Loc: %v) Listening on :8080\n", ServerUUID, ServerLoc)
+	http.ListenAndServe(":8080", corsMiddleware(mux))
+}
