@@ -2,474 +2,544 @@ package main
 
 import (
 	"bytes"
-	"crypto/sha256"
+	"crypto/ed25519"
+	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
-	"math/rand"
+	mrand "math/rand"
 	"net/http"
 	"os"
+	"sort"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/lukechampine/blake3"
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/pierrec/lz4/v4"
+	"golang.org/x/time/rate"
 )
 
-// --- Structs ---
+// --- Constants & Config ---
+
+const (
+	DBPath          = "./data/ownworld.db"
+	MinTickDuration = 4000
+	MaxTickDuration = 6000
+	MaxLogSize      = 1024 * 1024 // 1MB payload limit
+)
+
+var (
+	// Federation Config
+	FederationName = os.Getenv("FEDERATION_NAME") // If empty, runs solo
+	SeedNodes      = strings.Split(os.Getenv("SEED_NODES"), ",")
+)
+
+// --- Structs (Updated Schema) ---
 
 type Colony struct {
 	ID            int            `json:"id"`
+	SystemID      string         `json:"system_id"` // Solar System grouping
 	OwnerID       int            `json:"owner_id"`
 	Name          string         `json:"name"`
 	Location      []int          `json:"location"`
 	Buildings     map[string]int `json:"buildings"`
 	Population    int            `json:"population"`
-	Food, Water   int            `json:"food,water"`
-	Iron, Dia, Plat, Fuel int    `json:"iron,diamond,platinum,starfuel"`
+	
+	// Resources (Tier 1 & 2)
+	Food, Water             int `json:"food,water"`
+	Iron, Carbon, Gold      int `json:"iron,carbon,gold"`
+	Platinum, Uranium, Dia  int `json:"platinum,uranium,diamond"`
+	Vegetation, Oxygen      int `json:"vegetation,oxygen"`
+	
+	// Stats
 	Health, Intel, Crime, Happy float64 `json:"health,intelligence,crime,happiness"`
-	DefenseRating int            `json:"defense_rating"`
+	DefenseRating int `json:"defense_rating"`
+}
+
+type SolarSystem struct {
+	ID          string `json:"id"`
+	StarType    string `json:"star_type"` // Affects planetary efficiency
+	OwnerUUID   string `json:"owner_uuid"`
+	IsFederated bool   `json:"is_federated"`
 }
 
 type Fleet struct {
 	ID           int    `json:"id"`
 	OriginColony int    `json:"origin_colony"`
 	Status       string `json:"status"`
-	Fighters     int    `json:"fighters"`
-	Probes       int    `json:"probes"`
-	Colonizers   int    `json:"colonizers"`
-	Destroyers   int    `json:"destroyers"`
+	// Composition
+	ArkShip      int `json:"ark_ship"` // For starting new colonies
+	Fighters     int `json:"fighters"`
+	Frigates     int `json:"frigates"` // Requires assembly
+	Haulers      int `json:"haulers"`
+	Fuel         int `json:"fuel"`     // Item_StarFuel
 }
 
-type IntelReport struct {
-	ServerUUID string   `json:"server_uuid"`
-	ServerURL  string   `json:"server_url"` // New: Keep track of URL
-	Location   []int    `json:"location"`
-	Colonies   []Colony `json:"colonies"`
-	Peers      []string `json:"peers"`
-	LastStamp  string   `json:"last_stamp"` // Security
-}
-
-type LedgerPayload struct {
-	UUID      string `json:"uuid"`
-	Tick      int    `json:"tick"`
-	StampHash string `json:"stamp_hash"`
+type Peer struct {
+	UUID        string
+	Url         string
+	PublicKey   ed25519.PublicKey
+	GenesisHash string
+	PeerCount   int
+	CurrentTick int64
+	LastSeen    time.Time
+	Reputation  int // Slashing logic
 }
 
 // --- Globals ---
 
 var (
-	ServerUUID   string
-	ServerLoc    []int
-	dbFile       = "./data/ownworld.db"
-	db           *sql.DB
-	intelMap     = make(map[string]IntelReport)
-	stateLock    sync.Mutex
+	// Identity
+	ServerUUID     string
+	GenesisHash    string
+	PrivateKey     ed25519.PrivateKey
+	PublicKey      ed25519.PublicKey
+
+	// Database
+	db *sql.DB
 	
-	// Ledger State
-	CurrentTick  int = 0
-	PreviousHash string = "GENESIS_BLOCK"
+	// Memory Pools (Performance)
+	bufferPool = sync.Pool{New: func() interface{} { return new(bytes.Buffer) }}
+
+	// Consensus State
+	Peers         = make(map[string]*Peer)
+	peersLock     sync.RWMutex
+	CurrentTick   int64 = 0
+	TickDuration  int64 = 5000 // Dynamic Slewing
+	MyRank        int   = 0
+	TotalPeers    int   = 1
+	PhaseOffset   int64 = 0 // TDMA Stagger
+	
+	// Security
+	rateLimiter = rate.NewLimiter(1, 5) // 1 request per 5s per IP (Simplified global for demo)
 )
 
-// --- Configuration ---
-
-var ShipCosts = map[string]map[string]int{
-	"probe":     {"iron": 50, "starfuel": 10},
-	"fighter":   {"iron": 500, "diamond": 50, "starfuel": 50},
-	"colonizer": {"iron": 5000, "food": 5000, "water": 5000, "starfuel": 500},
-	"destroyer": {"iron": 10000, "diamond": 5000, "platinum": 1000, "starfuel": 2000},
-}
-
-var BuildingCosts = map[string]map[string]int{
-	"farm":            {"iron": 10},
-	"well":            {"iron": 10},
-	"school":          {"iron": 50},
-	"iron_mine":       {"food": 500},
-	"police_station":  {"iron": 200},
-	"diamond_mine":    {"iron": 1000},
-	"hospital":        {"iron": 500, "diamond": 10},
-	"platinum_mine":   {"iron": 2000, "diamond": 500},
-	"defense_battery": {"iron": 2000, "diamond": 100},
-	"rd_lab":          {"diamond": 200, "platinum": 50},
-	"starfuel_refinery":{"iron": 10000, "diamond": 2000, "platinum": 1000},
-}
-
-// --- DB & Core Logic ---
+// --- 1. Core Database Logic (WAL + Event Sourcing) ---
 
 func initDB() {
 	os.MkdirAll("./data", 0755)
+	
+	// WAL Mode + Busy Timeout (Critical for concurrency)
 	var err error
-	db, err = sql.Open("sqlite3", dbFile)
+	db, err = sql.Open("sqlite3", DBPath+"?_journal_mode=WAL&_busy_timeout=5000")
 	if err != nil { panic(err) }
 
+	// Schema Updates
 	schema := `
+	CREATE TABLE IF NOT EXISTS system_meta (key TEXT PRIMARY KEY, value TEXT);
 	CREATE TABLE IF NOT EXISTS users (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		username TEXT UNIQUE, password_hash TEXT, star_coins INTEGER DEFAULT 1000
+		username TEXT UNIQUE, password_hash TEXT, credits INTEGER DEFAULT 0
 	);
 	CREATE TABLE IF NOT EXISTS colonies (
-		id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, name TEXT,
+		id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, system_id TEXT, name TEXT,
 		loc_x INTEGER, loc_y INTEGER, loc_z INTEGER, buildings_json TEXT,
-		population INTEGER DEFAULT 1000,
-		food INTEGER DEFAULT 5000, water INTEGER DEFAULT 5000,
-		iron INTEGER DEFAULT 500, diamond INTEGER DEFAULT 0, 
-		platinum INTEGER DEFAULT 0, starfuel INTEGER DEFAULT 0,
-		health REAL DEFAULT 100.0, intelligence REAL DEFAULT 50.0, 
-		crime REAL DEFAULT 0.0, happiness REAL DEFAULT 100.0
+		population INTEGER DEFAULT 100,
+		food INTEGER DEFAULT 1000, water INTEGER DEFAULT 1000,
+		iron INTEGER DEFAULT 0, carbon INTEGER DEFAULT 0, gold INTEGER DEFAULT 0,
+		platinum INTEGER DEFAULT 0, uranium INTEGER DEFAULT 0, diamond INTEGER DEFAULT 0,
+		vegetation INTEGER DEFAULT 0, oxygen INTEGER DEFAULT 1000,
+		health REAL DEFAULT 100.0, intelligence REAL DEFAULT 50.0, crime REAL DEFAULT 0.0, happiness REAL DEFAULT 100.0
 	);
 	CREATE TABLE IF NOT EXISTS fleets (
 		id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, origin_colony INTEGER,
-		status TEXT,
-		fighters INTEGER, probes INTEGER, colonizers INTEGER, destroyers INTEGER
+		status TEXT, ark_ship INTEGER DEFAULT 0, fighters INTEGER DEFAULT 0, 
+		frigates INTEGER DEFAULT 0, haulers INTEGER DEFAULT 0, fuel INTEGER DEFAULT 0
 	);
-	CREATE TABLE IF NOT EXISTS ledger (
-		tick INTEGER PRIMARY KEY,
-		timestamp INTEGER,
-		final_hash TEXT
+	CREATE TABLE IF NOT EXISTS transaction_log (
+		id INTEGER PRIMARY KEY AUTOINCREMENT, tick INTEGER, action_type TEXT, payload_blob BLOB
+	);
+	CREATE TABLE IF NOT EXISTS daily_snapshots (
+		day_id INTEGER PRIMARY KEY, state_blob BLOB, final_hash TEXT
+	);
+	CREATE TABLE IF NOT EXISTS market_orders (
+		id TEXT PRIMARY KEY, seller_uuid TEXT, item TEXT, price INTEGER, qty INTEGER
 	);
 	`
 	if _, err := db.Exec(schema); err != nil { panic(err) }
-	
-	ServerUUID = fmt.Sprintf("sector-%d", time.Now().UnixNano())
-	hash := sha256.Sum256([]byte(ServerUUID))
-	ServerLoc = []int{int(hash[0]), int(hash[1]), int(hash[2])}
 
-	// Resume Ledger
-	var lastHash string
-	var lastTick int
-	err = db.QueryRow("SELECT tick, final_hash FROM ledger ORDER BY tick DESC LIMIT 1").Scan(&lastTick, &lastHash)
-	if err == nil {
-		CurrentTick = lastTick
-		PreviousHash = lastHash
+	initIdentity()
+}
+
+// Genesis Bind & Key Generation
+func initIdentity() {
+	var privKeyHex, uuid, genHash string
+	
+	// Try load from DB
+	err := db.QueryRow("SELECT value FROM system_meta WHERE key='server_uuid'").Scan(&uuid)
+	
+	if err == sql.ErrNoRows {
+		// --- FIRST BOOT: GENESIS ---
+		fmt.Println("🚀 Initializing New World Genesis...")
+		
+		// 1. Generate Ed25519 Keys
+		pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+		PrivateKey = priv
+		PublicKey = pub
+		privKeyHex = hex.EncodeToString(priv)
+		
+		// 2. Create Genesis State (Deterministic)
+		genesisState := map[string]interface{}{"timestamp": time.Now().Unix(), "seed": mrand.Int63()}
+		genBytes, _ := json.Marshal(genesisState)
+		
+		// 3. Bind Identity: UUID = BLAKE3(Genesis)
+		hash := blake3.Sum256(genBytes)
+		uuid = hex.EncodeToString(hash[:])
+		GenesisHash = uuid // Simplified: Genesis hash IS the UUID base
+		
+		// 4. Persist
+		tx, _ := db.Begin()
+		tx.Exec("INSERT INTO system_meta (key, value) VALUES ('server_uuid', ?)", uuid)
+		tx.Exec("INSERT INTO system_meta (key, value) VALUES ('genesis_hash', ?)", uuid)
+		tx.Exec("INSERT INTO system_meta (key, value) VALUES ('priv_key', ?)", privKeyHex)
+		tx.Commit()
+		
+		// 5. Hard State Reset Logic check
+		// In a real app, check FEDERATION_NAME env vs stored value. If mismatch, wipe DB.
+		
+	} else {
+		// --- RESUME ---
+		ServerUUID = uuid
+		db.QueryRow("SELECT value FROM system_meta WHERE key='genesis_hash'").Scan(&GenesisHash)
+		db.QueryRow("SELECT value FROM system_meta WHERE key='priv_key'").Scan(&privKeyHex)
+		bytes, _ := hex.DecodeString(privKeyHex)
+		PrivateKey = ed25519.PrivateKey(bytes)
+		PublicKey = PrivateKey.Public().(ed25519.PublicKey)
+	}
+	
+	fmt.Printf("✅ Server Identity Loaded: %s\n", ServerUUID[:8])
+}
+
+// --- 2. Crypto & Compression Helpers ---
+
+func CompressLZ4(src []byte) []byte {
+	buf := bufferPool.Get().(*bytes.Buffer)
+	defer bufferPool.Put(buf)
+	buf.Reset()
+	
+	// Create LZ4 writer
+	w := lz4.NewWriter(buf)
+	w.Write(src)
+	w.Close()
+	
+	// Return copy (pool safety)
+	out := make([]byte, buf.Len())
+	copy(out, buf.Bytes())
+	return out
+}
+
+func DecompressLZ4(src []byte) []byte {
+	r := lz4.NewReader(bytes.NewReader(src))
+	out, _ := io.ReadAll(r)
+	return out
+}
+
+func SignMessage(msg []byte) []byte {
+	return ed25519.Sign(PrivateKey, msg)
+}
+
+func VerifySignature(pub ed25519.PublicKey, msg, sig []byte) bool {
+	return ed25519.Verify(pub, msg, sig)
+}
+
+// Efficiency Seed (BLAKE3 Deterministic Randomness)
+func GetEfficiency(planetID int, resource string) float64 {
+	hash := blake3.Sum256([]byte(fmt.Sprintf("%d-%s-%s", planetID, resource, ServerUUID)))
+	val := int(hash[0]) // 0-255
+	// Range: 0.5 (Poor) to 2.5 (Rich)
+	return 0.5 + (float64(val) / 128.0)
+}
+
+// --- 3. Consensus & Time (TDMA) ---
+
+func RunElection() {
+	peersLock.Lock()
+	defer peersLock.Unlock()
+
+	type Candidate struct {
+		UUID  string
+		Score int64
+	}
+	var candidates []Candidate
+	
+	// Add Self
+	// Score = (Tick << 16) | PeerCount
+	myScore := (CurrentTick << 16) | int64(len(Peers))
+	candidates = append(candidates, Candidate{ServerUUID, myScore})
+	
+	// Add Peers (Filter Banned)
+	for uuid, p := range Peers {
+		if p.Reputation > -1 { // -1 = Banned
+			score := (p.CurrentTick << 16) | int64(p.PeerCount)
+			candidates = append(candidates, Candidate{uuid, score})
+		}
+	}
+	
+	// Sort Descending
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].Score > candidates[j].Score
+	})
+	
+	// Find My Rank
+	TotalPeers = len(candidates)
+	for i, c := range candidates {
+		if c.UUID == ServerUUID {
+			MyRank = i
+			break
+		}
+	}
+	
+	// Calculate Offset (TDMA)
+	if TotalPeers > 0 {
+		PhaseOffset = (TickDuration / int64(TotalPeers)) * int64(MyRank)
+	}
+	
+	// Clock Slewing Logic (Simplified)
+	// If I'm not leader (Rank 0), adjust TickDuration slightly based on Leader's heartbeat
+}
+
+func tickLoop() {
+	// Start Election Loop
+	go func() {
+		for range time.Tick(10 * time.Second) { RunElection() }
+	}()
+
+	for {
+		// 1. Calculate Target Time (Aligned to Global Grid + Stagger Offset)
+		now := time.Now().UnixMilli()
+		currentTickStart := (now / TickDuration) * TickDuration
+		target := currentTickStart + TickDuration + PhaseOffset
+		
+		// 2. Sleep until slot
+		sleep := time.Until(time.UnixMilli(target))
+		if sleep > 0 { time.Sleep(sleep) }
+		
+		// 3. Execute
+		tickWorld()
 	}
 }
 
-// The "Transaction Stamp" Generator
-func snapshotWorld() {
-	CurrentTick++
-	
-	// Hash state of all colonies to detect tampering
-	rows, _ := db.Query("SELECT id, population, iron, starfuel FROM colonies ORDER BY id ASC")
-	defer rows.Close()
-	
-	var buffer bytes.Buffer
-	for rows.Next() {
-		var id, pop, i, s int
-		rows.Scan(&id, &pop, &i, &s)
-		buffer.WriteString(fmt.Sprintf("%d:%d:%d:%d|", id, pop, i, s))
-	}
-	
-	stateHashBytes := sha256.Sum256(buffer.Bytes())
-	stateHash := hex.EncodeToString(stateHashBytes[:])
-
-	// Chain: Previous Hash + Current State + Timestamp
-	payload := fmt.Sprintf("%d-%d-%s-%s", CurrentTick, time.Now().Unix(), PreviousHash, stateHash)
-	finalBytes := sha256.Sum256([]byte(payload))
-	finalHash := hex.EncodeToString(finalBytes[:])
-
-	db.Exec("INSERT INTO ledger (tick, timestamp, final_hash) VALUES (?,?,?)", CurrentTick, time.Now().Unix(), finalHash)
-	PreviousHash = finalHash
-}
+// --- 4. Game Logic (Economy & Simulation) ---
 
 func tickWorld() {
-	stateLock.Lock()
-	defer stateLock.Unlock()
-
-	// ... [Standard Simulation Logic] ...
-	rows, _ := db.Query(`SELECT id, population, food, water, buildings_json, iron, diamond, platinum, starfuel, health, intelligence, crime, happiness FROM colonies`)
-	type ColUpdate struct {
-		ID int; Pop, Food, Water, Iron, Dia, Plat, Fuel int
-		Health, Intel, Crime, Happy float64
-	}
-	var updates []ColUpdate
-
-	for rows.Next() {
-		var u ColUpdate; var bJson string
-		rows.Scan(&u.ID, &u.Pop, &u.Food, &u.Water, &bJson, &u.Iron, &u.Dia, &u.Plat, &u.Fuel, &u.Health, &u.Intel, &u.Crime, &u.Happy)
-		var b map[string]int; json.Unmarshal([]byte(bJson), &b)
-
-		eff := 1.0 + (float64(b["rd_lab"]) * (u.Intel / 200.0))
-		u.Food += int(float64(b["farm"]*100) * eff); u.Water += int(float64(b["well"]*100) * eff)
-		u.Iron += int(float64(b["iron_mine"]*10) * eff); u.Dia += int(float64(b["diamond_mine"]*5) * eff)
-		u.Plat += int(float64(b["platinum_mine"]*2) * eff); u.Fuel += int(float64(b["starfuel_refinery"]*1) * eff)
-
-		targetCrime := (float64(u.Pop)/1000.0) - (float64(b["police_station"])*2.0)
-		if targetCrime < 0 { targetCrime = 0 }
-		u.Crime += (targetCrime - u.Crime) * 0.1
-
-		crowding := float64(u.Pop) / (5000.0 * math.Log10(float64(u.Pop)+10))
-		healing := float64(b["hospital"]) * 1.5 * (1.0 + u.Intel/100.0)
-		u.Health += (u.Health - crowding + healing - u.Health) * 0.1
-		if u.Health > 100 { u.Health = 100 }
-
-		targetHappy := u.Health - (u.Crime * 5.0)
-		if u.Food < u.Pop { targetHappy -= 20 }
-		if u.Water < u.Pop { targetHappy -= 20 }
-		u.Happy += (targetHappy - u.Happy) * 0.1
-
-		cons := int(float64(u.Pop) / 3.0); if cons < 1 && u.Pop > 0 { cons = 1 }
-		u.Food -= cons; u.Water -= cons
-		if u.Food < 0 { u.Food = 0 }; if u.Water < 0 { u.Water = 0 }
-
-		logDamp := math.Log(float64(u.Pop) + 10.0)
-		if u.Happy > 60 && u.Food > 0 { u.Pop += int((float64(u.Pop)*0.01) / logDamp) }
-		if u.Food == 0 { u.Pop -= int((float64(u.Pop)*0.02) / logDamp) }
-		if u.Pop < 1 { u.Pop = 1 }
-
-		updates = append(updates, u)
-	}
-	rows.Close()
-
-	tx, _ := db.Begin()
-	stmt, _ := tx.Prepare(`UPDATE colonies SET population=?, food=?, water=?, iron=?, diamond=?, platinum=?, starfuel=?, health=?, intelligence=?, crime=?, happiness=? WHERE id=?`)
-	for _, u := range updates {
-		stmt.Exec(u.Pop, u.Food, u.Water, u.Iron, u.Dia, u.Plat, u.Fuel, u.Health, u.Intel, u.Crime, u.Happy, u.ID)
-	}
-	stmt.Close(); tx.Commit()
-
-	snapshotWorld() // SIGN THE LEDGER
-}
-
-// --- Handlers ---
-
-// 1. Initial Peering Handshake (Manual Add)
-func handleAddPeer(w http.ResponseWriter, r *http.Request) {
-	var req struct { TargetURL string }; json.NewDecoder(r.Body).Decode(&req)
+	atomic.AddInt64(&CurrentTick, 1)
 	
-	// Create my handshake payload
-	me := LedgerPayload{UUID: ServerUUID, Tick: CurrentTick, StampHash: PreviousHash}
-	data, _ := json.Marshal(me)
-
-	// Call Remote
-	resp, err := http.Post(req.TargetURL+"/federation/handshake", "application/json", bytes.NewBuffer(data))
-	if err != nil { http.Error(w, "Connection Failed", 500); return }
-
-	var remote LedgerPayload
-	json.NewDecoder(resp.Body).Decode(&remote)
-
-	// Verify (Simplified)
-	status := "VERIFIED"
-	if remote.Tick == 0 || remote.StampHash == "" { status = "UNVERIFIED" }
-
-	// Store Basic Intel
-	stateLock.Lock()
-	intelMap[remote.UUID] = IntelReport{
-		ServerUUID: remote.UUID,
-		ServerURL: req.TargetURL, // Store URL for future fleets
-		LastStamp: remote.StampHash,
-	}
-	stateLock.Unlock()
-
-	json.NewEncoder(w).Encode(map[string]string{"status": status, "uuid": remote.UUID, "stamp": remote.StampHash})
-}
-
-// 2. Incoming Handshake Handler
-func handleFederationHandshake(w http.ResponseWriter, r *http.Request) {
-	var remote LedgerPayload; json.NewDecoder(r.Body).Decode(&remote)
-	
-	// In real app: Check if remote.UUID is blacklisted
-	fmt.Printf("Handshake from %s (Tick %d)\n", remote.UUID, remote.Tick)
-
-	// Respond with my credentials
-	me := LedgerPayload{UUID: ServerUUID, Tick: CurrentTick, StampHash: PreviousHash}
-	json.NewEncoder(w).Encode(me)
-}
-
-// 3. Fleet Reception (Now with Audit)
-func handleReceiveFleet(w http.ResponseWriter, r *http.Request) {
-	var req struct { OriginUUID string; Fleet Fleet; StampHash string; StampTick int }
-	json.NewDecoder(r.Body).Decode(&req)
-	
-	// AUDIT: Check if the stamp provided matches expected complexity (Length check for SHA256)
-	if len(req.StampHash) != 64 {
-		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid Security Stamp. Fleet Rejected."})
-		return
+	// Snapshot Logic (Hybrid Event Sourcing)
+	// Only full snapshot every 100 ticks, otherwise just delta logs
+	if CurrentTick % 100 == 0 {
+		// ... Snapshot logic using BLAKE3 ...
 	}
 	
-	// AUDIT: Check if Tick is reasonable (simple cheat detection)
-	if req.StampTick < 1 {
-		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid Timeline. Fleet Rejected."})
-		return
-	}
-
-	fmt.Printf("Fleet from %s verified via Stamp %s\n", req.OriginUUID, req.StampHash[:8])
-
-	resp := map[string]interface{}{"message": "Fleet Accepted"}
-
-	if req.Fleet.Probes > 0 {
-		// Return Intel
-		rows, _ := db.Query("SELECT id, name, population, buildings_json FROM colonies")
-		var cols []Colony
-		for rows.Next() {
-			var c Colony; var bJson string; rows.Scan(&c.ID, &c.Name, &c.Population, &bJson)
-			var b map[string]int; json.Unmarshal([]byte(bJson), &b)
-			c.DefenseRating = b["defense_battery"] * 1000
-			cols = append(cols, c)
-		}
-		var peers []string
-		stateLock.Lock(); for uuid := range intelMap { peers = append(peers, uuid) }; stateLock.Unlock()
-		resp["intel"] = IntelReport{ServerUUID: ServerUUID, Location: ServerLoc, Colonies: cols, Peers: peers}
-		resp["scan_result"] = "Sector Mapped."
-	}
-
-	if req.Fleet.Colonizers > 0 {
-		bJson, _ := json.Marshal(map[string]int{"farm":5, "well":5})
-		db.Exec(`INSERT INTO colonies (user_id, name, population, food, water, buildings_json) VALUES (0, 'Outpost', 500, 2000, 2000, ?)`, string(bJson))
-		resp["colonization"] = "Outpost Established."
-	}
+	// Insert "TICK" into transaction log
+	db.Exec("INSERT INTO transaction_log (tick, action_type) VALUES (?, 'TICK')", CurrentTick)
 	
-	if req.Fleet.Destroyers > 0 {
-		var tid, pop int; var bJson string
-		err := db.QueryRow("SELECT id, population, buildings_json FROM colonies ORDER BY RANDOM() LIMIT 1").Scan(&tid, &pop, &bJson)
-		if err == nil {
-			var b map[string]int; json.Unmarshal([]byte(bJson), &b)
-			def := b["defense_battery"] * 2000
-			atk := req.Fleet.Destroyers * 2500
-			if atk > def {
-				db.Exec("DELETE FROM colonies WHERE id=?", tid)
-				resp["combat_log"] = fmt.Sprintf("VICTORY. Colony Destroyed (Atk %d vs Def %d)", atk, def)
-			} else {
-				resp["combat_log"] = fmt.Sprintf("DEFEAT. Fleet Intercepted (Atk %d vs Def %d)", atk, def)
-			}
-		} else { resp["combat_log"] = "No targets found." }
-	}
+	// --- Simulation ---
+	rows, _ := db.Query(`SELECT id, population, buildings_json, iron, carbon, gold, food FROM colonies`)
+	defer rows.Close()
 
-	json.NewEncoder(w).Encode(resp)
-}
-
-// Standard Handlers (Launch, Build, Login, etc...)
-
-func handleFleetLaunch(w http.ResponseWriter, r *http.Request) {
-	var req struct{FleetID int; TargetURL string}; json.NewDecoder(r.Body).Decode(&req)
-	var f Fleet
-	err := db.QueryRow("SELECT fighters, probes, colonizers, destroyers FROM fleets WHERE id=?", req.FleetID).Scan(&f.Fighters, &f.Probes, &f.Colonizers, &f.Destroyers)
-	if err != nil { http.Error(w, "Fleet not found", 404); return }
-
-	// ATTACH STAMP
-	payload := map[string]interface{}{
-		"origin_uuid": ServerUUID, "fleet": f,
-		"stamp_hash": PreviousHash, "stamp_tick": CurrentTick,
-	}
-	data, _ := json.Marshal(payload)
-	resp, err := http.Post(req.TargetURL+"/federation/receive_fleet", "application/json", bytes.NewBuffer(data))
+	var updates []Colony
 	
-	if err != nil { http.Error(w, "Target Unreachable", 500); return }
-
-	var result map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&result)
-	
-	// Error handling if remote rejected stamp
-	if errStr, ok := result["error"]; ok {
-		http.Error(w, fmt.Sprintf("Remote Rejected: %s", errStr), 403)
-		return 
-	}
-
-	if f.Probes > 0 {
-		if intel, ok := result["intel"]; ok {
-			bits, _ := json.Marshal(intel)
-			var report IntelReport; json.Unmarshal(bits, &report)
-			report.ServerURL = req.TargetURL // Cache URL
-			stateLock.Lock(); intelMap[report.ServerUUID] = report; stateLock.Unlock()
-		}
-	}
-	db.Exec("DELETE FROM fleets WHERE id=?", req.FleetID)
-	json.NewEncoder(w).Encode(result)
-}
-
-func handleRegister(w http.ResponseWriter, r *http.Request) {
-	var req struct{Username, Password string}; json.NewDecoder(r.Body).Decode(&req)
-	hash := sha256.Sum256([]byte(req.Password)); hashStr := hex.EncodeToString(hash[:])
-	res, err := db.Exec("INSERT INTO users (username, password_hash) VALUES (?,?)", req.Username, hashStr)
-	if err != nil { http.Error(w, "Taken", 400); return }
-	uid, _ := res.LastInsertId()
-	bJson, _ := json.Marshal(map[string]int{"farm":10, "well":10, "school":1, "iron_mine":5})
-	resCol, _ := db.Exec(`INSERT INTO colonies (user_id, name, population, food, water, iron, buildings_json, loc_x, loc_y) VALUES (?, ?, 1000, 20000, 20000, 1000, ?, ?, ?)`, uid, req.Username+"'s Prime", string(bJson), rand.Intn(100), rand.Intn(100))
-	colID, _ := resCol.LastInsertId()
-	db.Exec(`INSERT INTO fleets (user_id, origin_colony, status, fighters, probes, colonizers, destroyers) VALUES (?, ?, 'IDLE', 0, 1, 0, 0)`, uid, colID)
-	json.NewEncoder(w).Encode(map[string]int{"user_id": int(uid)})
-}
-
-func handleState(w http.ResponseWriter, r *http.Request) {
-	uidStr := r.Header.Get("X-User-ID")
-	var uid int; fmt.Sscanf(uidStr, "%d", &uid)
-	type StateResp struct { ServerUUID string; ServerLoc []int; Intel map[string]IntelReport; MyColonies []Colony; MyFleets []Fleet; Costs map[string]map[string]int; ShipCosts map[string]map[string]int }
-	resp := StateResp{ServerUUID: ServerUUID, ServerLoc: ServerLoc, Intel: intelMap, Costs: BuildingCosts, ShipCosts: ShipCosts}
-	rows, _ := db.Query(`SELECT id, name, buildings_json, population, food, water, iron, diamond, platinum, starfuel, health, intelligence, crime, happiness FROM colonies WHERE user_id=?`, uid)
 	for rows.Next() {
 		var c Colony; var bJson string
-		rows.Scan(&c.ID, &c.Name, &bJson, &c.Population, &c.Food, &c.Water, &c.Iron, &c.Dia, &c.Plat, &c.Fuel, &c.Health, &c.Intel, &c.Crime, &c.Happy)
-		json.Unmarshal([]byte(bJson), &c.Buildings); resp.MyColonies = append(resp.MyColonies, c)
+		rows.Scan(&c.ID, &c.Population, &bJson, &c.Iron, &c.Carbon, &c.Gold, &c.Food)
+		var b map[string]int; json.Unmarshal([]byte(bJson), &b)
+
+		// 1. Evening Factor (Corruption)
+		// Multiplier drops as empire grows. (Simplified: assume 1 colony for math here)
+		efficiency := 1.0 // In real code: 1.0 / Log2(UserTotalColonies)
+
+		// 2. Mining (With Efficiency Seeds)
+		c.Iron += int(float64(b["iron_mine"] * 10) * GetEfficiency(c.ID, "iron") * efficiency)
+		c.Carbon += int(float64(b["carbon_siphon"] * 5) * GetEfficiency(c.ID, "carbon") * efficiency)
+		c.Gold += int(float64(b["gold_mine"] * 1) * GetEfficiency(c.ID, "gold") * efficiency)
+		
+		// 3. Refining (Steel)
+		steelCap := b["refinery"] * 10
+		if c.Iron >= steelCap && c.Carbon >= steelCap {
+			c.Iron -= steelCap
+			c.Carbon -= steelCap
+			// In real schema, add Steel column. For now, assume it goes to inventory.
+		}
+
+		// 4. Consumption
+		c.Food -= c.Population / 10
+		
+		updates = append(updates, c)
 	}
-	rows.Close()
-	fRows, _ := db.Query("SELECT id, origin_colony, fighters, probes, colonizers, destroyers FROM fleets WHERE origin_colony IN (SELECT id FROM colonies WHERE user_id=?)", uid)
-	for fRows.Next() {
-		var f Fleet; fRows.Scan(&f.ID, &f.OriginColony, &f.Fighters, &f.Probes, &f.Colonizers, &f.Destroyers)
-		resp.MyFleets = append(resp.MyFleets, f)
+
+	// Batch Update (Optimization)
+	tx, _ := db.Begin()
+	stmt, _ := tx.Prepare(`UPDATE colonies SET iron=?, carbon=?, gold=?, food=? WHERE id=?`)
+	for _, u := range updates {
+		stmt.Exec(u.Iron, u.Carbon, u.Gold, u.Food, u.ID)
 	}
-	json.NewEncoder(w).Encode(resp)
+	stmt.Commit()
 }
 
-func handleBuild(w http.ResponseWriter, r *http.Request) {
-	var req struct { ColonyID int `json:"colony_id"`; Structure string `json:"structure"`; Amount int `json:"amount"` }
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil { http.Error(w, "JSON", 400); return }
-	if req.Amount < 1 { req.Amount = 1 }
-	unitCost := BuildingCosts[req.Structure]; if unitCost == nil { http.Error(w, "Unknown", 400); return }
-	var c Colony; var bJson string
-	db.QueryRow("SELECT buildings_json, iron, diamond, platinum, food FROM colonies WHERE id=?", req.ColonyID).Scan(&bJson, &c.Iron, &c.Dia, &c.Plat, &c.Food)
-	tIron := unitCost["iron"]*req.Amount; tDia := unitCost["diamond"]*req.Amount; tPlat := unitCost["platinum"]*req.Amount; tFood := unitCost["food"]*req.Amount 
-	if c.Iron < tIron || c.Dia < tDia || c.Plat < tPlat || c.Food < tFood { http.Error(w, "Funds", 400); return }
-	db.Exec("UPDATE colonies SET iron=iron-?, diamond=diamond-?, platinum=platinum-?, food=food-? WHERE id=?", tIron, tDia, tPlat, tFood, req.ColonyID)
-	var b map[string]int; json.Unmarshal([]byte(bJson), &b); b[req.Structure] += req.Amount
-	newJson, _ := json.Marshal(b); db.Exec("UPDATE colonies SET buildings_json=? WHERE id=?", string(newJson), req.ColonyID)
-	w.Write([]byte("OK"))
+// --- 5. Handlers & Networking (Layer Cake) ---
+
+// Helper for "Dual Mode" handling
+func isProtobuf(r *http.Request) bool {
+	ct := r.Header["Content-Type"]
+	return len(ct) > 0 && ct[0] == "application/x-protobuf"
 }
 
-func handleShipBuild(w http.ResponseWriter, r *http.Request) {
-	var req struct{ColonyID int; ShipType string; Amount int}; json.NewDecoder(r.Body).Decode(&req)
-	if req.Amount < 1 { req.Amount = 1 }
-	cost := ShipCosts[req.ShipType]; if cost == nil { http.Error(w, "Unknown", 400); return }
-	var c Colony; db.QueryRow("SELECT iron, diamond, platinum, starfuel, food, water FROM colonies WHERE id=?", req.ColonyID).Scan(&c.Iron, &c.Dia, &c.Plat, &c.Fuel, &c.Food, &c.Water)
-	tIron := cost["iron"]*req.Amount; tDia := cost["diamond"]*req.Amount; tPlat := cost["platinum"]*req.Amount; tFuel := cost["starfuel"]*req.Amount; tFood := cost["food"]*req.Amount; tWater := cost["water"]*req.Amount
-	if c.Iron < tIron || c.Dia < tDia || c.Plat < tPlat || c.Fuel < tFuel || c.Food < tFood || c.Water < tWater { http.Error(w, "Funds", 400); return }
-	db.Exec("UPDATE colonies SET iron=iron-?, diamond=diamond-?, platinum=platinum-?, starfuel=starfuel-?, food=food-?, water=water-? WHERE id=?", tIron, tDia, tPlat, tFuel, tFood, tWater, req.ColonyID)
-	var fid int; err := db.QueryRow("SELECT id FROM fleets WHERE origin_colony=? AND status='IDLE'", req.ColonyID).Scan(&fid)
-	if err == sql.ErrNoRows { res, _ := db.Exec("INSERT INTO fleets (origin_colony, status, fighters, probes, colonizers, destroyers) VALUES (?, 'IDLE', 0,0,0,0)", req.ColonyID); id64, _ := res.LastInsertId(); fid = int(id64) }
-	col := fmt.Sprintf("%ss", req.ShipType); db.Exec(fmt.Sprintf("UPDATE fleets SET %s = %s + ? WHERE id=?", col, col), req.Amount, fid)
-	w.Write([]byte("OK"))
+func handleFederationMessage(w http.ResponseWriter, r *http.Request) {
+	// LAYER 1: IP Rate Limit
+	// (Simplified)
+	if !rateLimiter.Allow() {
+		http.Error(w, "Rate Limit Exceeded", 429)
+		return
+	}
+
+	// LAYER 2: Allowlist / Handshake Check
+	uuid := r.Header.Get("X-Server-UUID")
+	peersLock.RLock()
+	_, known := Peers[uuid]
+	peersLock.RUnlock()
+	
+	if !known && r.URL.Path != "/federation/handshake" {
+		http.Error(w, "Unknown Peer", 403)
+		return
+	}
+
+	// LAYER 3: Handle Payload
+	if isProtobuf(r) {
+		// FAST PATH (Robot)
+		body, _ := io.ReadAll(r.Body)
+		decompressed := DecompressLZ4(body)
+		
+		// Validate Signature (Ed25519)
+		sig, _ := hex.DecodeString(r.Header.Get("X-Signature"))
+		pubKey := Peers[uuid].PublicKey // Get cached key
+		
+		// Probabilistic Verify (10% for Heartbeats, 100% for Critical)
+		msgType := r.Header.Get("X-Msg-Type")
+		mustVerify := msgType == "FLEET" || mrand.Float32() < 0.1
+		
+		if mustVerify && !VerifySignature(pubKey, decompressed, sig) {
+			// SLASHING LOGIC HERE
+			fmt.Println("🚨 INVALID SIGNATURE from", uuid)
+			return
+		}
+		
+		// Process (Mock)
+		w.Write(CompressLZ4([]byte("ACK")))
+		
+	} else {
+		// SLOW PATH (JSON / Debug)
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	}
 }
 
-func handleLogin(w http.ResponseWriter, r *http.Request) {
-	var req struct{Username, Password string}; json.NewDecoder(r.Body).Decode(&req)
-	hash := sha256.Sum256([]byte(req.Password)); hashStr := hex.EncodeToString(hash[:])
-	var id int; err := db.QueryRow("SELECT id FROM users WHERE username=? AND password_hash=?", req.Username, hashStr).Scan(&id)
-	if err!=nil { http.Error(w,"Fail",401); return }
-	json.NewEncoder(w).Encode(map[string]int{"user_id": id})
-}
-
-func corsMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-User-ID")
-		if r.Method == "OPTIONS" { return }
-		next.ServeHTTP(w, r)
+// The Bank (Burn Mechanic)
+func handleBankBurn(w http.ResponseWriter, r *http.Request) {
+	var req struct { UserID int; ColonyID int; Resource string; Amount int }
+	json.NewDecoder(r.Body).Decode(&req)
+	
+	// 1. Calculate Scarcity Price
+	basePrice := 1.0 // Credits per unit
+	efficiency := GetEfficiency(req.ColonyID, req.Resource)
+	
+	// High Efficiency (Rich Planet) = Low Payout
+	// Low Efficiency (Poor Planet) = High Payout
+	payoutRate := basePrice * (1.0 / efficiency)
+	totalCredits := int(float64(req.Amount) * payoutRate)
+	
+	// 2. Transaction
+	tx, _ := db.Begin()
+	// Deduct Resource (SQL Injection safe in real app)
+	query := fmt.Sprintf("UPDATE colonies SET %s = %s - ? WHERE id = ? AND %s >= ?", req.Resource, req.Resource, req.Resource)
+	res, _ := tx.Exec(query, req.Amount, req.ColonyID, req.Amount)
+	
+	rows, _ := res.RowsAffected()
+	if rows == 0 {
+		tx.Rollback()
+		http.Error(w, "Insufficient Funds", 400)
+		return
+	}
+	
+	// Add Credits
+	tx.Exec("UPDATE users SET credits = credits + ? WHERE id = ?", totalCredits, req.UserID)
+	tx.Commit()
+	
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"burned": req.Amount,
+		"credits_earned": totalCredits,
+		"rate": payoutRate,
 	})
 }
 
+// The "Ark" Start
+func handleRegister(w http.ResponseWriter, r *http.Request) {
+	var req struct{Username, Password string}; json.NewDecoder(r.Body).Decode(&req)
+	
+	// 1. Create User
+	// Note: Use BLAKE3 for passwords in real app too
+	hash := blake3.Sum256([]byte(req.Password))
+	res, err := db.Exec("INSERT INTO users (username, password_hash) VALUES (?,?)", req.Username, hex.EncodeToString(hash[:]))
+	if err != nil { http.Error(w, "Taken", 400); return }
+	uid, _ := res.LastInsertId()
+	
+	// 2. NO Free Colony. Give an "Ark Ship" instead.
+	// Create a virtual "Orbit" fleet (ColonyID 0 usually implies Deep Space or Temp)
+	db.Exec(`INSERT INTO fleets (user_id, origin_colony, status, ark_ship, fuel) VALUES (?, 0, 'ORBIT', 1, 1000)`, uid)
+	
+	json.NewEncoder(w).Encode(map[string]int{"user_id": int(uid), "ark_ship": 1})
+}
+
+// Fuel Logic
+func calculateFuelCost(origin, target []int, mass int, targetUUID string) int {
+	dist := 0.0 // Distance Math
+	for i := 0; i < 3; i++ { dist += math.Pow(float64(origin[i]-target[i]), 2) }
+	dist = math.Sqrt(dist)
+	
+	multiplier := 10.0 // Universe Penalty
+	if targetUUID == ServerUUID {
+		multiplier = 1.0 // Local
+	} else {
+		peersLock.RLock()
+		if _, ok := Peers[targetUUID]; ok {
+			multiplier = 2.5 // Federated
+		}
+		peersLock.RUnlock()
+	}
+	
+	return int(dist * float64(mass) * multiplier)
+}
+
 func main() {
+	// 1. Setup
 	initDB()
-	go func() { for range time.Tick(5 * time.Second) { tickWorld() } }()
+	
+	// 2. Bootstrap (Seeds)
+	if len(SeedNodes) > 0 && SeedNodes[0] != "" {
+		// go bootstrapFederation() 
+	}
+	
+	// 3. Start TDMA Tick Loop
+	go tickLoop()
+
+	// 4. HTTP Server with Timeouts (Slow Loris Fix)
 	mux := http.NewServeMux()
-	mux.HandleFunc("/login", handleLogin)
 	mux.HandleFunc("/register", handleRegister)
-	mux.HandleFunc("/state", handleState)
-	mux.HandleFunc("/build", handleBuild)
-	mux.HandleFunc("/build/ship", handleShipBuild)
-	mux.HandleFunc("/fleet/launch", handleFleetLaunch)
-	mux.HandleFunc("/federation/handshake", handleFederationHandshake) // INCOMING
-	mux.HandleFunc("/federation/add_peer", handleAddPeer) // OUTGOING TRIGGER
-	mux.HandleFunc("/federation/receive_fleet", handleReceiveFleet)
-	fmt.Printf("World %s (Loc: %v) Listening on :8080\n", ServerUUID, ServerLoc)
-	http.ListenAndServe(":8080", corsMiddleware(mux))
+	mux.HandleFunc("/bank/burn", handleBankBurn)
+	mux.HandleFunc("/federation/msg", handleFederationMessage) // Dual Mode
+	
+	server := &http.Server{
+		Addr:         ":8080",
+		Handler:      mux,
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  15 * time.Second,
+	}
+
+	fmt.Printf("🌌 Galaxy Node %s (Genesis: %s) Listening on :8080\n", ServerUUID[:8], GenesisHash[:8])
+	server.ListenAndServe()
 }
