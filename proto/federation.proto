@@ -1,0 +1,26 @@
+syntax = "proto3";
+package federation;
+option go_package = "./pkg/federation";
+
+message Heartbeat {
+  string server_uuid = 1;
+  int64 current_tick = 2;
+  int32 peer_count = 3;
+  string previous_hash = 4;
+}
+
+message FleetMove {
+  string origin_uuid = 1;
+  int32 fleet_id = 2;
+  // Use bytes for LZ4 compressed fleet struct to keep proto simple
+  bytes compressed_fleet_data = 3; 
+  int64 target_tick = 4;
+  bytes signature = 5;
+}
+
+message MarketTrade {
+  string buyer_uuid = 1;
+  string order_id = 2;
+  int32 quantity = 3;
+  int32 payment_credits = 4;
+}
