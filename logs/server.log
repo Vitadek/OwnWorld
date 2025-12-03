@@ -660,3 +660,8 @@ INFO: 2025/12/02 21:24:19 main.go:73: Mode: promiscuous | Control: true
 INFO: 2025/12/02 21:24:19 main.go:28: No SEED_NODES found. Starting as Lonely/Genesis Node.
 INFO: 2025/12/02 21:24:19 main.go:113: Node f1bf4dc39ce0697603afe49e09d0481096ff532c5bac04c244158cfb221e4e78 Listening on :8080
 INFO: 2025/12/02 21:24:19 simulation.go:113: Starting Galaxy Engine...
+INFO: 2025/12/02 22:05:44 main.go:72: OWNWORLD BOOT SEQUENCE (V3.1)
+INFO: 2025/12/02 22:05:44 main.go:73: Mode: promiscuous | Control: true
+INFO: 2025/12/02 22:05:44 main.go:115: Node 0fd4b3b55c37761aa4200a8dd87b2d610fc567f8b0408287154b38cd97b9ec7c Listening on :8080
+INFO: 2025/12/02 22:05:44 simulation.go:113: Starting Galaxy Engine...
+INFO: 2025/12/02 22:05:44 main.go:28: No SEED_NODES found. Starting as Lonely/Genesis Node.
