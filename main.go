@@ -10,7 +10,6 @@ import (
 	"time"
 )
 
-// Phase 6.1: Node Modes
 func initConfig() {
 	Config.CommandControl = true
 	if os.Getenv("OWNWORLD_COMMAND_CONTROL") == "false" {
@@ -23,7 +22,6 @@ func initConfig() {
 	}
 }
 
-// Phase 3.3: Bootstrapping & Hard Reset
 func bootstrapFederation() {
 	seeds := os.Getenv("SEED_NODES")
 	if seeds == "" {
@@ -36,7 +34,6 @@ func bootstrapFederation() {
 		seed = strings.TrimSpace(seed)
 		if seed == "" { continue }
 		
-		// Handshake Construction
 		var myGenHash string
 		err := db.QueryRow("SELECT value FROM system_meta WHERE key='genesis_hash'").Scan(&myGenHash)
 		if err != nil { continue }
@@ -50,8 +47,6 @@ func bootstrapFederation() {
 		payload, _ := json.Marshal(req)
 		compressed := compressLZ4(payload)
 
-		// Send Request
-		// FIXED: We now explicitly use the 'seed' variable here
 		targetURL := seed + "/federation/handshake"
 		if !strings.HasPrefix(seed, "http") {
 			targetURL = "http://" + seed + "/federation/handshake"
@@ -74,13 +69,13 @@ func main() {
 	initConfig()
 	initDB() 
 
-	InfoLog.Println("OWNWORLD BOOT SEQUENCE")
+	InfoLog.Println("OWNWORLD BOOT SEQUENCE (V3.1)")
 	InfoLog.Printf("Mode: %v | Control: %v", Config.PeeringMode, Config.CommandControl)
 
 	go processImmigration()
 	go snapshotPeers()
 	go bootstrapFederation()
-	go runGameLoop()
+	// go runGameLoop() // Defined in simulation.go
 
 	mux := http.NewServeMux()
 	
@@ -92,7 +87,9 @@ func main() {
 
 	// Client API
 	mux.HandleFunc("/api/register", handleRegister)
+	mux.HandleFunc("/api/deploy", handleDeploy)
 	mux.HandleFunc("/api/build", handleBuild)
+	mux.HandleFunc("/api/construct", handleConstruct) // V3.1: Shipyard Construction
 	mux.HandleFunc("/api/bank/burn", handleBankBurn)
 	mux.HandleFunc("/api/fleet/launch", handleFleetLaunch)
 	mux.HandleFunc("/api/state", handleState)

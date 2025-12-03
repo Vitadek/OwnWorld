@@ -16,30 +16,18 @@ func initDB() {
 	if err := os.MkdirAll("./data", 0755); err != nil {
 		panic(err)
 	}
-	// Phase 1.1: WAL Mode & Timeout
 	dsn := dbFile + "?_journal_mode=WAL&_busy_timeout=5000"
 	var err error
 	db, err = sql.Open("sqlite3", dsn)
-	if err != nil {
-		panic(err)
-	}
+	if err != nil { panic(err) }
 	
-	// Verification
-	var mode string
-	db.QueryRow("PRAGMA journal_mode;").Scan(&mode)
-	if mode != "wal" {
-		// Attempt to force it
-		db.Exec("PRAGMA journal_mode=WAL;")
-	}
+	db.Exec("PRAGMA journal_mode=WAL;")
 
 	createSchema()
 	initIdentity()
 }
 
 func createSchema() {
-	// Phase 1.3: Schema Definition
-	
-	// Identity & World
 	schemaMut := `
 	CREATE TABLE IF NOT EXISTS users (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -58,18 +46,12 @@ func createSchema() {
 		id INTEGER PRIMARY KEY AUTOINCREMENT, system_id TEXT, efficiency_seed TEXT, type TEXT,
 		FOREIGN KEY(system_id) REFERENCES solar_systems(id)
 	);
-	-- Phase 1.3: Colony Deep Schema
 	CREATE TABLE IF NOT EXISTS colonies (
 		id INTEGER PRIMARY KEY AUTOINCREMENT, system_id TEXT, owner_uuid TEXT, name TEXT, buildings_json TEXT,
-		
-		-- Resources Tier 1
 		iron INTEGER DEFAULT 0, carbon INTEGER DEFAULT 0, gold INTEGER DEFAULT 0,
 		uranium INTEGER DEFAULT 0, platinum INTEGER DEFAULT 0, diamond INTEGER DEFAULT 0,
-		
-		-- Resources Tier 2
 		food INTEGER DEFAULT 0, water INTEGER DEFAULT 0, oxygen INTEGER DEFAULT 0, vegetation INTEGER DEFAULT 0,
-
-		-- Society
+		fuel INTEGER DEFAULT 0, -- V3.1: Added Fuel for Ship Construction
 		pop_laborers INTEGER DEFAULT 0, pop_specialists INTEGER DEFAULT 0, pop_elites INTEGER DEFAULT 0,
 		stability_current REAL DEFAULT 100.0, stability_target REAL DEFAULT 100.0, 
 		crime_rate REAL DEFAULT 0.0, martial_law BOOLEAN DEFAULT 0
@@ -81,20 +63,14 @@ func createSchema() {
 		ark_ship INTEGER DEFAULT 0, fighters INTEGER DEFAULT 0, frigates INTEGER DEFAULT 0, haulers INTEGER DEFAULT 0
 	);
 	`
-	// Phase 1.4: Immutable Audit Layer
 	schemaImmutable := `
 	CREATE TABLE IF NOT EXISTS transaction_log (
-		id INTEGER PRIMARY KEY AUTOINCREMENT, 
-		tick INTEGER, 
-		action_type TEXT, 
-		payload_blob BLOB
+		id INTEGER PRIMARY KEY AUTOINCREMENT, tick INTEGER, action_type TEXT, payload_blob BLOB
 	);
 	CREATE INDEX IF NOT EXISTS idx_tx_tick ON transaction_log(tick);
-	
 	CREATE TABLE IF NOT EXISTS daily_snapshots (
 		day_id INTEGER PRIMARY KEY, state_blob BLOB, final_hash TEXT
 	);
-	
 	CREATE TABLE IF NOT EXISTS system_meta (
 		key TEXT PRIMARY KEY, value TEXT
 	);
@@ -102,7 +78,6 @@ func createSchema() {
 	if _, err := db.Exec(schemaMut); err != nil { panic(err) }
 	if _, err := db.Exec(schemaImmutable); err != nil { panic(err) }
 
-	// Resume Ledger State
 	var lastTick int
 	var lastHash string
 	err := db.QueryRow("SELECT tick, final_hash FROM ledger ORDER BY tick DESC LIMIT 1").Scan(&lastTick, &lastHash)
@@ -112,37 +87,24 @@ func createSchema() {
 	}
 }
 
-// Phase 2.2: Identity & Genesis Bind
 func initIdentity() {
 	var uuid string
 	err := db.QueryRow("SELECT value FROM system_meta WHERE key='server_uuid'").Scan(&uuid)
 	
 	if err == sql.ErrNoRows {
 		InfoLog.Println("First Boot Detected. Generating Identity...")
-		
-		// Generate Ed25519 Keys
-		pub, priv, err := ed25519.GenerateKey(rand.Reader)
-		if err != nil { panic(err) }
-		
-		// Generate Genesis Seed
+		pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 		randBytes := make([]byte, 16)
 		rand.Read(randBytes)
 		
-		genState := GenesisState{
-			Seed: hex.EncodeToString(randBytes), 
-			Timestamp: time.Now().Unix(), 
-			PubKey: hex.EncodeToString(pub),
-		}
+		genState := GenesisState{Seed: hex.EncodeToString(randBytes), Timestamp: time.Now().Unix(), PubKey: hex.EncodeToString(pub)}
 		genJSON, _ := json.Marshal(genState)
 		
-		// Bind Server Identity to Genesis
-		// FIXED: Use hashBLAKE3 instead of undefined Hash
 		ServerUUID = hashBLAKE3(genJSON)
-		genesisHash := hashBLAKE3(genJSON) 
 		
 		tx, _ := db.Begin()
 		tx.Exec("INSERT INTO system_meta (key, value) VALUES ('server_uuid', ?)", ServerUUID)
-		tx.Exec("INSERT INTO system_meta (key, value) VALUES ('genesis_hash', ?)", genesisHash)
+		tx.Exec("INSERT INTO system_meta (key, value) VALUES ('genesis_hash', ?)", hashBLAKE3(genJSON))
 		tx.Exec("INSERT INTO system_meta (key, value) VALUES ('public_key', ?)", hex.EncodeToString(pub))
 		tx.Exec("INSERT INTO system_meta (key, value) VALUES ('private_key', ?)", hex.EncodeToString(priv))
 		tx.Commit()
@@ -150,17 +112,15 @@ func initIdentity() {
 		PrivateKey = priv
 		PublicKey = pub
 		LeaderUUID = ServerUUID
-		InfoLog.Printf("Identity Generated: %s", ServerUUID)
 	} else {
 		ServerUUID = uuid
 		var privStr, pubStr string
 		db.QueryRow("SELECT value FROM system_meta WHERE key='private_key'").Scan(&privStr)
 		db.QueryRow("SELECT value FROM system_meta WHERE key='public_key'").Scan(&pubStr)
-		
 		privBytes, _ := hex.DecodeString(privStr)
 		pubBytes, _ := hex.DecodeString(pubStr)
 		PrivateKey = ed25519.PrivateKey(privBytes)
 		PublicKey = ed25519.PublicKey(pubBytes)
-		LeaderUUID = ServerUUID // Default until election
+		LeaderUUID = ServerUUID
 	}
 }

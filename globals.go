@@ -40,8 +40,8 @@ var (
 
 	// Configuration
 	Config struct {
-		CommandControl bool   // If false, disable User APIs
-		PeeringMode    string // "promiscuous" or "strict"
+		CommandControl bool   
+		PeeringMode    string 
 	}
 
 	// Logging
@@ -61,6 +61,21 @@ var BuildingCosts = map[string]map[string]int{
 	"farm":          {"iron": 10},
 	"well":          {"iron": 10},
 	"iron_mine":     {"carbon": 50},
-	"gold_mine":     {"iron": 500, "carbon": 100},
 	"urban_housing": {"iron": 100, "carbon": 100},
+	// The Infrastructure Gate
+	"shipyard":      {"iron": 1000, "carbon": 500},
+}
+
+// V3.1: Unit Construction Costs
+var UnitCosts = map[string]map[string]int{
+	"ark_ship": {
+		"iron": 5000, 
+		"food": 5000, 
+		"fuel": 500, // Requires Fuel in Colony Storage
+		"pop_laborers": 100, // Crew Requirement
+	},
+	"scout": {
+		"iron": 500,
+		"fuel": 50,
+	},
 }
