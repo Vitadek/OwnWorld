@@ -517,3 +517,11 @@ INFO: 2025/11/30 20:43:14 ownworld.go:343: Tick 319. Leader: sector-1. Phase Off
 INFO: 2025/11/30 20:43:19 ownworld.go:343: Tick 320. Leader: sector-1. Phase Offset: 0s
 INFO: 2025/11/30 20:43:24 ownworld.go:343: Tick 321. Leader: sector-1. Phase Offset: 0s
 INFO: 2025/11/30 20:43:29 ownworld.go:343: Tick 322. Leader: sector-1. Phase Offset: 0s
+INFO: 2025/12/02 17:53:46 ownworld.go:341: First Boot Detected. Generating Identity...
+INFO: 2025/12/02 17:53:46 ownworld.go:699: OWNWORLD BOOT SEQUENCE
+INFO: 2025/12/02 17:53:46 ownworld.go:700: Phase 1-3: Systems... [OK]
+INFO: 2025/12/02 17:53:46 ownworld.go:701: Phase 4: Consensus... [OK]
+INFO: 2025/12/02 17:53:46 ownworld.go:702: Phase 5: Simulation... [OK]
+INFO: 2025/12/02 17:53:46 ownworld.go:703: Phase 6: Infrastructure... [OK] (Mode: promiscuous, Ctrl: true)
+INFO: 2025/12/02 17:53:46 ownworld.go:726: Node 556f90c9562bf6c1251846af659dd9adc2a101a93d17333abc5ee5f0206a38bf Listening on :8080
+INFO: 2025/12/02 17:53:46 ownworld.go:599: Starting Galaxy Engine...

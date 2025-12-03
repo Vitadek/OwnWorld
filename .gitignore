@@ -1,5 +1,15 @@
-./start_world
-./data
-./logs
-./ownworld
-./user-console
+# Binaries
+ownworld
+user-console
+start_world
+
+# Directories
+data/
+logs/
+
+# Extensions (Safety net)
+*.db
+*.log
+
+# Environment variables (Critical security)
+.env
