@@ -51,7 +51,7 @@ type Colony struct {
 	Uranium    int `json:"uranium"`
 	Diamond    int `json:"diamond"`
 	Vegetation int `json:"vegetation"`
-	Oxygen     int `json:"oxygen"` // Added per Protocol
+	Oxygen     int `json:"oxygen"`
 
 	// Stats
 	PopLaborers      int     `json:"pop_laborers"`
@@ -95,6 +95,15 @@ type HandshakeRequest struct {
 	GenesisHash string `json:"genesis_hash"`
 	PublicKey   string `json:"public_key"`
 	Address     string `json:"address"`
+}
+
+// Phase 3.3: Transaction Protocol
+type TransactionRequest struct {
+	UUID      string `json:"uuid"`      // Sender Server UUID
+	Tick      int    `json:"tick"`      // Sender Tick (Lag Check)
+	Type      string `json:"type"`      // FLEET_ARRIVAL, MARKET_TRADE
+	Payload   []byte `json:"payload"`   // Inner JSON
+	Signature []byte `json:"signature"` // Ed25519 of Payload
 }
 
 type Peer struct {

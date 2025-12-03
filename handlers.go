@@ -60,6 +60,66 @@ func handleHandshake(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// Phase 3.3 & 4.3: Secure Transaction Handling
+func handleFederationTransaction(w http.ResponseWriter, r *http.Request) {
+	// 1. Decompress
+	body, _ := io.ReadAll(r.Body)
+	decompressed := decompressLZ4(body)
+	var req TransactionRequest
+	if err := json.Unmarshal(decompressed, &req); err != nil {
+		http.Error(w, "Bad JSON", 400)
+		return
+	}
+
+	peerLock.RLock()
+	peer, known := peers[req.UUID]
+	peerLock.RUnlock()
+	if !known {
+		http.Error(w, "Unknown Peer", 403)
+		return
+	}
+
+	// 2. Verify Signature (Security)
+	// We verify that the payload was indeed signed by the peer's known public key
+	if !VerifySignature(peer.PublicKey, req.Payload, req.Signature) {
+		ErrorLog.Printf("SECURITY: Invalid Signature from %s", req.UUID)
+		http.Error(w, "Invalid Signature", 401)
+		return
+	}
+
+	// 3. Lag Switch Protection (Consensus)
+	// If the transaction is too old (> 5 ticks) or from the future (> 2 ticks), reject it.
+	// This prevents players from unplugging their router, moving fleets, and plugging it back in.
+	stateLock.Lock()
+	tickDiff := req.Tick - CurrentTick
+	stateLock.Unlock()
+
+	if tickDiff < -5 {
+		http.Error(w, "Transaction Expired (Lag)", 408)
+		return
+	}
+	if tickDiff > 2 {
+		http.Error(w, "Transaction Future (Clock Skew)", 400)
+		return
+	}
+
+	// 4. Process Logic
+	switch req.Type {
+	case "FLEET_ARRIVAL":
+		var f Fleet
+		json.Unmarshal(req.Payload, &f)
+		InfoLog.Printf("FLEET ARRIVAL: Fleet %d from %s arrived at %s", f.ID, req.UUID, f.DestSystem)
+		// Insert fleet into DB with status ORBIT
+		db.Exec(`INSERT INTO fleets (owner_uuid, status, fuel, origin_system, dest_system, ark_ship, fighters, frigates, haulers) 
+		         VALUES (?, 'ORBIT', ?, ?, ?, ?, ?, ?, ?)`, 
+				 f.OwnerUUID, f.Fuel, f.OriginSystem, f.DestSystem, f.ArkShip, f.Fighters, f.Frigates, f.Haulers)
+		w.Write([]byte("Fleet Docked"))
+	
+	default:
+		http.Error(w, "Unknown Type", 400)
+	}
+}
+
 func snapshotPeers() {
 	ticker := time.NewTicker(60 * time.Second)
 	for {

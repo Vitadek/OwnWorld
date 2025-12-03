@@ -95,7 +95,7 @@ func main() {
 
 	go processImmigration()
 	go snapshotPeers()
-	go bootstrapFederation() // <--- Phase 3.2 Trigger
+	go bootstrapFederation()
 	go runGameLoop()
 
 	mux := http.NewServeMux()
@@ -104,6 +104,7 @@ func main() {
 	mux.HandleFunc("/federation/handshake", handleHandshake)
 	mux.HandleFunc("/federation/sync", handleSyncLedger)
 	mux.HandleFunc("/federation/map", handleMap)
+	mux.HandleFunc("/federation/transaction", handleFederationTransaction) // <--- New Route
 
 	// Client API
 	mux.HandleFunc("/api/register", handleRegister)
