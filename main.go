@@ -75,7 +75,7 @@ func main() {
 	go processImmigration()
 	go snapshotPeers()
 	go bootstrapFederation()
-	// go runGameLoop() // Defined in simulation.go
+	go runGameLoop()
 
 	mux := http.NewServeMux()
 	
@@ -89,7 +89,7 @@ func main() {
 	mux.HandleFunc("/api/register", handleRegister)
 	mux.HandleFunc("/api/deploy", handleDeploy)
 	mux.HandleFunc("/api/build", handleBuild)
-	mux.HandleFunc("/api/construct", handleConstruct) // V3.1: Shipyard Construction
+	mux.HandleFunc("/api/construct", handleConstruct)
 	mux.HandleFunc("/api/bank/burn", handleBankBurn)
 	mux.HandleFunc("/api/fleet/launch", handleFleetLaunch)
 	mux.HandleFunc("/api/state", handleState)

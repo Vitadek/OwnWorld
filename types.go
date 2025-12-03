@@ -5,11 +5,9 @@ import (
 	"time"
 )
 
-// --- Domain Models ---
-
 type User struct {
 	ID            int    `json:"id"`
-	GlobalUUID    string `json:"global_uuid"` // BLAKE3 Federation ID
+	GlobalUUID    string `json:"global_uuid"`
 	Username      string `json:"username"`
 	PasswordHash  string `json:"password_hash"`
 	Credits       int    `json:"credits"`
@@ -35,19 +33,17 @@ type Planet struct {
 }
 
 type Colony struct {
-	ID            int    `json:"id"`
-	SystemID      string `json:"system_id"`
-	OwnerUUID     string `json:"owner_uuid"`
-	Name          string `json:"name"`
-	BuildingsJSON string `json:"buildings_json"`
+	ID            int            `json:"id"`
+	SystemID      string         `json:"system_id"`
+	OwnerUUID     string         `json:"owner_uuid"`
+	Name          string         `json:"name"`
+	BuildingsJSON string         `json:"buildings_json"`
 	Buildings     map[string]int `json:"buildings,omitempty"`
 
-	// Population Strata
 	PopLaborers    int `json:"pop_laborers"`
 	PopSpecialists int `json:"pop_specialists"`
 	PopElites      int `json:"pop_elites"`
 
-	// Resources (Full Table)
 	Food       int `json:"food"`
 	Water      int `json:"water"`
 	Iron       int `json:"iron"`
@@ -58,9 +54,8 @@ type Colony struct {
 	Diamond    int `json:"diamond"`
 	Vegetation int `json:"vegetation"`
 	Oxygen     int `json:"oxygen"`
-	Fuel       int `json:"fuel"` // FIXED: Added missing Fuel field
+	Fuel       int `json:"fuel"`
 
-	// Stability & Stats
 	StabilityCurrent float64 `json:"stability_current"`
 	StabilityTarget  float64 `json:"stability_target"`
 	MartialLaw       bool    `json:"martial_law"`
@@ -69,23 +64,17 @@ type Colony struct {
 type Fleet struct {
 	ID            int    `json:"id"`
 	OwnerUUID     string `json:"owner_uuid"`
-	Status        string `json:"status"` // ORBIT, TRANSIT
-	
-	// Navigation
+	Status        string `json:"status"`
 	OriginSystem  string `json:"origin_system"`
 	DestSystem    string `json:"dest_system"`
 	DepartureTick int    `json:"departure_tick"`
 	ArrivalTick   int    `json:"arrival_tick"`
-
-	// Composition
-	ArkShip  int `json:"ark_ship"`
-	Fighters int `json:"fighters"`
-	Frigates int `json:"frigates"`
-	Haulers  int `json:"haulers"`
-	Fuel     int `json:"fuel"`
+	ArkShip       int    `json:"ark_ship"`
+	Fighters      int    `json:"fighters"`
+	Frigates      int    `json:"frigates"`
+	Haulers       int    `json:"haulers"`
+	Fuel          int    `json:"fuel"`
 }
-
-// --- Network & Consensus Models ---
 
 type HandshakeRequest struct {
 	UUID        string `json:"uuid"`
@@ -123,4 +112,10 @@ type LedgerEntry struct {
 	Tick      int    `json:"tick"`
 	FinalHash string `json:"final_hash"`
 	PrevHash  string `json:"prev_hash"`
+}
+
+type GenesisState struct {
+	Seed      string `json:"seed"`
+	Timestamp int64  `json:"timestamp"`
+	PubKey    string `json:"pub_key"`
 }

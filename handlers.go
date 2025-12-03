@@ -101,7 +101,6 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	res, _ := db.Exec("INSERT INTO users (username, password_hash, is_local) VALUES (?,?, 1)", req.Username, hash)
 	uid, _ := res.LastInsertId()
 
-	// Goldilocks Search
 	var sysUUID string
 	found := false
 	
@@ -127,7 +126,6 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	// 2. Create Colony (Homestead)
 	bJson, _ := json.Marshal(map[string]int{"farm": 5, "well": 5, "urban_housing": 10})
-	// Note: 'pop_laborers' etc. map to new schema
 	db.Exec(`INSERT INTO colonies (system_id, owner_uuid, name, buildings_json, pop_laborers, water, food, iron) 
 	         VALUES (?, ?, ?, ?, 1000, 5000, 5000, 500)`, sysUUID, req.Username, req.Username+"'s Prime", string(bJson))
 
@@ -164,7 +162,6 @@ func handleConstruct(w http.ResponseWriter, r *http.Request) {
 
 	var c Colony
 	var bJson string
-	// Fetch resources matching new schema
 	err := db.QueryRow("SELECT buildings_json, system_id, owner_uuid, iron, food, fuel, pop_laborers FROM colonies WHERE id=?", req.ColonyID).Scan(&bJson, &c.SystemID, &c.OwnerUUID, &c.Iron, &c.Food, &c.Fuel, &c.PopLaborers)
 	
 	if err == nil {
@@ -175,7 +172,6 @@ func handleConstruct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	
-	// Requirement: Shipyard
 	if c.Buildings["shipyard"] < 1 {
 		http.Error(w, "Shipyard Required", 400)
 		return
@@ -191,11 +187,9 @@ func handleConstruct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Deduct
 	db.Exec("UPDATE colonies SET iron=iron-?, food=food-?, fuel=fuel-?, pop_laborers=pop_laborers-? WHERE id=?",
 		neededIron, neededFood, neededFuel, neededCrew, req.ColonyID)
 
-	// Create Fleet
 	arkCount := 0
 	if req.Unit == "ark_ship" { arkCount = req.Amount }
 	
@@ -261,7 +255,16 @@ func handleDeploy(w http.ResponseWriter, r *http.Request) {
 	var arkCount int
 	err := db.QueryRow("SELECT origin_system, owner_uuid, ark_ship FROM fleets WHERE id=? AND status='ORBIT'", req.FleetID).Scan(&sysID, &owner, &arkCount)
 	if err != nil || arkCount < 1 {
-		http.Error(w, "No Ark Available", 400)
+		http.Error(w, "No Ark Available or Fleet not in Orbit", 400)
+		return
+	}
+
+	// FIXED: Ownership Check
+	// Ensure no colony already exists in this system
+	var colonyCount int
+	db.QueryRow("SELECT count(*) FROM colonies WHERE system_id=?", sysID).Scan(&colonyCount)
+	if colonyCount > 0 {
+		http.Error(w, "System Already Colonized", 409)
 		return
 	}
 

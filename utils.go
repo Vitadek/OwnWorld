@@ -14,7 +14,7 @@ import (
 
 	"github.com/pierrec/lz4/v4"
 	"golang.org/x/time/rate"
-	"lukechampine.com/blake3" // FIXED: Canonical Import Path
+	"lukechampine.com/blake3"
 )
 
 // NOTE: bufferPool is defined in globals.go
@@ -73,7 +73,6 @@ func getLimiter(ip string) *rate.Limiter {
 	defer ipLock.Unlock()
 	limiter, exists := ipLimiters[ip]
 	if !exists {
-		// Layer 1: IP Rate Limiting (Strict 1 req/s, Burst 5)
 		limiter = rate.NewLimiter(1, 5)
 		ipLimiters[ip] = limiter
 	}
@@ -83,11 +82,11 @@ func getLimiter(ip string) *rate.Limiter {
 func middlewareSecurity(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ip, _, _ := net.SplitHostPort(r.RemoteAddr)
-		if ip == "::1" || ip == "127.0.0.1" {
-			// Localhost bypass
-		} else if !getLimiter(ip).Allow() {
-			http.Error(w, "Rate Limit Exceeded", 429)
-			return
+		if ip != "::1" && ip != "127.0.0.1" {
+			if !getLimiter(ip).Allow() {
+				http.Error(w, "Rate Limit Exceeded", 429)
+				return
+			}
 		}
 
 		if r.Method == "OPTIONS" {
@@ -97,9 +96,8 @@ func middlewareSecurity(next http.Handler) http.Handler {
 
 		contentType := r.Header.Get("Content-Type")
 
-		// Mode A: Federation Logic
-		if contentType == "application/x-ownworld-fed" {
-			// Layer 2: UUID Allowlist
+		// Mode A: Federation Logic (Allow custom header OR protobuf for future compat)
+		if contentType == "application/x-ownworld-fed" || contentType == "application/x-protobuf" {
 			if !strings.Contains(r.URL.Path, "handshake") {
 				senderUUID := r.Header.Get("X-Server-UUID")
 				peerLock.RLock()

@@ -38,8 +38,8 @@ func snapshotWorld() {
 	}
 
 	rawJSON, _ := json.Marshal(colonies)
-	compressed := compressLZ4(rawJSON) // Updated name
-	hash := hashBLAKE3(compressed)     // Updated name
+	compressed := compressLZ4(rawJSON) 
+	hash := hashBLAKE3(compressed)     
 
 	dayID := CurrentTick / 100
 	db.Exec("INSERT OR REPLACE INTO daily_snapshots (day_id, state_blob, final_hash) VALUES (?, ?, ?)", 
@@ -53,10 +53,9 @@ func tickWorld() {
 
 	CurrentTick++
 
-	// Fetch Full Colony Data
-	// Note: We use a simplified query for the fix to ensure it compiles with current structs
+	// Fetch Full Colony Data (V3 Schema)
 	rows, err := db.Query(`SELECT id, buildings_json, pop_laborers, pop_specialists, pop_elites, 
-	                       food, water, carbon, gold, stability_current, stability_target 
+	                       food, water, carbon, gold, fuel, stability_current, stability_target 
 	                       FROM colonies`)
 	if err != nil {
 		if CurrentTick % 10 == 0 { ErrorLog.Printf("Tick DB Error: %v", err) }
@@ -66,7 +65,7 @@ func tickWorld() {
 	
 	type ColUpdate struct {
 		ID int
-		Food, Water, Carbon, Gold int
+		Food, Water, Carbon, Gold, Fuel int
 		PopLab, PopSpec, PopElite int
 		Stability float64
 	}
@@ -76,7 +75,7 @@ func tickWorld() {
 		var c Colony
 		var bJson string
 		rows.Scan(&c.ID, &bJson, &c.PopLaborers, &c.PopSpecialists, &c.PopElites, 
-			&c.Food, &c.Water, &c.Carbon, &c.Gold, &c.StabilityCurrent, &c.StabilityTarget)
+			&c.Food, &c.Water, &c.Carbon, &c.Gold, &c.Fuel, &c.StabilityCurrent, &c.StabilityTarget)
 		json.Unmarshal([]byte(bJson), &c.Buildings)
 
 		// Simple Production
@@ -89,7 +88,7 @@ func tickWorld() {
 		c.StabilityTarget = 100.0
 
 		updates = append(updates, ColUpdate{
-			ID: c.ID, Food: c.Food, Water: c.Water, Carbon: c.Carbon, Gold: c.Gold,
+			ID: c.ID, Food: c.Food, Water: c.Water, Carbon: c.Carbon, Gold: c.Gold, Fuel: c.Fuel,
 			PopLab: c.PopLaborers, PopSpec: c.PopSpecialists, PopElite: c.PopElites,
 			Stability: c.StabilityCurrent,
 		})
@@ -98,10 +97,10 @@ func tickWorld() {
 	// Commit Updates
 	if len(updates) > 0 {
 		tx, _ := db.Begin()
-		stmt, _ := tx.Prepare(`UPDATE colonies SET food=?, water=?, carbon=?, gold=?, 
+		stmt, _ := tx.Prepare(`UPDATE colonies SET food=?, water=?, carbon=?, gold=?, fuel=?, 
 		                       pop_laborers=?, pop_specialists=?, pop_elites=?, stability_current=? WHERE id=?`)
 		for _, u := range updates {
-			stmt.Exec(u.Food, u.Water, u.Carbon, u.Gold, u.PopLab, u.PopSpec, u.PopElite, u.Stability, u.ID)
+			stmt.Exec(u.Food, u.Water, u.Carbon, u.Gold, u.Fuel, u.PopLab, u.PopSpec, u.PopElite, u.Stability, u.ID)
 		}
 		stmt.Close()
 		tx.Commit()
