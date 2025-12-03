@@ -70,10 +70,27 @@ func getLimiter(ip string) *rate.Limiter {
 	defer ipLock.Unlock()
 	limiter, exists := ipLimiters[ip]
 	if !exists {
-		limiter = rate.NewLimiter(1, 3)
+		// UPDATED: Increased limit to 10 req/s with burst of 20 to prevent 429s during polling
+		limiter = rate.NewLimiter(10, 20)
 		ipLimiters[ip] = limiter
 	}
 	return limiter
+}
+
+// middlewareCORS adds headers to allow browser clients
+func middlewareCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, X-User-ID")
+
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
 }
 
 func middlewareSecurity(next http.Handler) http.Handler {
@@ -81,6 +98,12 @@ func middlewareSecurity(next http.Handler) http.Handler {
 		ip, _, _ := net.SplitHostPort(r.RemoteAddr)
 		if !getLimiter(ip).Allow() {
 			http.Error(w, "Rate Limit", 429)
+			return
+		}
+
+		// Allow OPTIONS (CORS Preflight) to skip security checks
+		if r.Method == "OPTIONS" {
+			next.ServeHTTP(w, r)
 			return
 		}
 
@@ -103,7 +126,11 @@ func middlewareSecurity(next http.Handler) http.Handler {
 		}
 
 		// Mode B: Client API
-		if contentType == "application/json" {
+		// Robust check: Allow if Content-Type contains "application/json" (handles charset)
+		// OR if method is GET (often no body/type)
+		// OR if type is empty (some clients be lazy)
+		// OR if type is "text/plain;charset=UTF-8" (sometimes sent by fetch on errors/text responses)
+		if r.Method == "GET" || strings.Contains(contentType, "application/json") || contentType == "" || strings.Contains(contentType, "text/plain") {
 			if strings.HasPrefix(r.URL.Path, "/api/") && !Config.CommandControl {
 				http.Error(w, "Node is in Infrastructure Mode (No User API)", 503)
 				return
@@ -112,6 +139,6 @@ func middlewareSecurity(next http.Handler) http.Handler {
 			return
 		}
 
-		http.Error(w, "Bad Type", 415)
+		http.Error(w, "Bad Type: "+contentType, 415)
 	})
 }

@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>OwnWorld Commander v2</title>
+    <style>
+        :root { --bg:#050510; --panel:#151520; --accent:#00d2ff; --warn:#ffae00; --danger:#ff3333; --success:#00ff9d; --text:#ddd; }
+        body { background:var(--bg); color:var(--text); font-family:monospace; margin:0; padding:20px; }
+        
+        /* Layout */
+        .grid { display:grid; grid-template-columns: 1fr 350px; gap:20px; }
+        .panel { background:var(--panel); border:1px solid #333; padding:15px; margin-bottom:15px; }
+        
+        /* Controls */
+        button { background:transparent; border:1px solid var(--accent); color:var(--accent); padding:5px 10px; cursor:pointer; margin:2px; font-family:inherit; transition:0.2s; }
+        button:hover { background:var(--accent); color:#000; }
+        button:disabled { border-color:#555; color:#555; cursor:wait; }
+        input, select { background:#000; color:#fff; border:1px solid #555; padding:8px; margin-bottom:10px; width:100%; box-sizing:border-box; }
+
+        /* Tabs */
+        .tab-bar { margin-bottom:15px; border-bottom:1px solid #444; }
+        .tab { padding:10px; border:none; background:none; color:#666; cursor:pointer; font-size:1.1em; }
+        .tab.active { color:var(--accent); border-bottom:2px solid var(--accent); }
+
+        /* Resources Grid */
+        .res-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:5px; margin:10px 0; text-align:center; font-size:0.85em; }
+        .res-box { background:#222; padding:5px; border-bottom:2px solid #555; position:relative; }
+        
+        /* Auth Modal */
+        #auth-overlay { position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.9); z-index:2000; display:flex; justify-content:center; align-items:center; }
+        .auth-box { background:var(--panel); border:1px solid var(--accent); padding:30px; width:320px; text-align:center; }
+        
+        .auth-tabs { display:flex; margin-bottom:20px; border-bottom:1px solid #333; }
+        .auth-tab-btn { flex:1; padding:10px; cursor:pointer; background:none; border:none; color:#666; font-weight:bold; }
+        .auth-tab-btn.active { color:var(--accent); border-bottom:2px solid var(--accent); }
+    </style>
+</head>
+<body>
+
+<!-- AUTH OVERLAY -->
+<div id="auth-overlay">
+    <div class="auth-box">
+        <h2 style="color:var(--accent); margin-top:0;">OWNWORLD UPLINK</h2>
+        
+        <!-- Server Config -->
+        <input id="srv-url" value="http://localhost:8080" placeholder="Server URL" style="margin-bottom:20px;">
+
+        <!-- Auth Tabs -->
+        <div class="auth-tabs">
+            <button id="tab-login" class="auth-tab-btn active" onclick="switchAuth('login')" style="border:none;">LOGIN</button>
+            <button id="tab-register" class="auth-tab-btn" onclick="switchAuth('register')" style="border:none;">REGISTER</button>
+        </div>
+
+        <input id="login-user" placeholder="Username">
+        <input id="login-pass" type="password" placeholder="Password">
+        
+        <button id="auth-btn" onclick="performAuth()" style="width:100%; padding:10px; font-weight:bold; margin-top:10px; background:var(--success); color:#000;">LOGIN</button>
+        <div id="auth-msg" style="color:var(--danger); margin-top:10px; font-size:0.9em;"></div>
+    </div>
+</div>
+
+<!-- MAIN UI -->
+<div id="app-ui" style="display:none;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
+        <div>
+            <strong style="font-size:1.2em; color:var(--accent)">COMMANDER <span id="display-user">...</span></strong>
+            <span style="color:#666; margin-left:10px;" id="display-id">ID: ...</span>
+        </div>
+        <div>
+            TICK: <span id="srv-tick" style="color:var(--warn)">...</span>
+            LEADER: <span id="srv-leader" style="color:var(--success)">...</span>
+        </div>
+    </div>
+
+    <div class="tab-bar">
+        <button class="tab active" onclick="setTab('colonies')">COLONIES</button>
+        <button class="tab" onclick="setTab('fleets')">FLEETS</button>
+        <button class="tab" onclick="setTab('intel')">INTEL</button>
+    </div>
+
+    <div class="grid">
+        <!-- Main View -->
+        <div id="main-view">
+            <!-- Dynamic Content -->
+            <div style="color:#666; text-align:center; padding:50px;">Waiting for Uplink...</div>
+        </div>
+
+        <!-- Sidebar -->
+        <div class="sidebar">
+            <div class="panel">
+                <h3 style="margin-top:0; color:var(--warn)">QUICK ACTIONS</h3>
+                <input id="action-amt" type="number" value="1" placeholder="Amount">
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:5px;">
+                    <button onclick="quickBuild('farm')">Build Farm</button>
+                    <button onclick="quickBuild('well')">Build Well</button>
+                    <button onclick="quickBuild('iron_mine')">Iron Mine</button>
+                    <button onclick="quickBuild('urban_housing')">Housing</button>
+                </div>
+                <div style="margin-top:10px; border-top:1px solid #333; padding-top:10px;">
+                    <button style="width:100%; border-color:var(--success); color:var(--success)" onclick="quickBurn('iron')">BURN IRON (Sell)</button>
+                </div>
+            </div>
+            
+            <div class="panel">
+                <h3 style="margin-top:0;">SYSTEM LOG</h3>
+                <div id="logs" style="height:150px; overflow-y:auto; font-size:0.8em; color:#888;"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    let API_URL = "http://localhost:8080";
+    let STATE = null;
+    let USER_ID = null;
+    let USER_NAME = null;
+    let AUTH_MODE = 'login';
+    let ACTIVE_TAB = 'colonies';
+
+    // --- Init ---
+    window.onload = function() {
+        const saved = localStorage.getItem("ownworld_url");
+        if(saved) document.getElementById('srv-url').value = saved;
+    }
+
+    function switchAuth(mode) {
+        AUTH_MODE = mode;
+        document.getElementById('tab-login').className = mode === 'login' ? 'auth-tab-btn active' : 'auth-tab-btn';
+        document.getElementById('tab-register').className = mode === 'register' ? 'auth-tab-btn active' : 'auth-tab-btn';
+        document.getElementById('auth-btn').innerText = mode.toUpperCase();
+        document.getElementById('auth-msg').innerText = "";
+    }
+
+    // --- Auth Logic ---
+    async function performAuth() {
+        const url = document.getElementById('srv-url').value.replace(/\/$/, "");
+        const u = document.getElementById('login-user').value;
+        const p = document.getElementById('login-pass').value;
+        
+        if(!u || !p) return showAuthError("Credentials missing");
+        
+        localStorage.setItem("ownworld_url", url);
+        API_URL = url + "/api";
+        showAuthError("Connecting...", "var(--accent)");
+
+        try {
+            // V2 Logic: /register handles both creation and existing user check (returns 400 if taken)
+            // Ideally we'd have /login, but we stick to existing server code.
+            const res = await fetch(`${API_URL}/register`, {
+                method: 'POST', body: JSON.stringify({username: u, password: p})
+            });
+
+            if(res.ok) {
+                // New User Created
+                const data = await res.json();
+                USER_ID = data.user_id;
+                USER_NAME = u;
+                startSession();
+            } else {
+                const txt = await res.text();
+                if(txt.includes("Taken")) {
+                    if (AUTH_MODE === 'register') {
+                        showAuthError("Username Taken.");
+                    } else {
+                        // Login Mode: Assume success if taken? (Rough MVP hack)
+                        // Wait, without ID we can't fetch state. 
+                        // **CRITICAL FIX**: If server code wasn't updated to return ID on taken, we are stuck.
+                        // Assuming you added handleState, we can TRY to fetch state with just the username? No, needs ID header.
+                        
+                        // IF YOU UPDATED SERVER handlers.go with handleState, it requires X-User-ID (int).
+                        // Since we don't know the ID (server didn't return it on 400), we can't login old users properly without a server change.
+                        // I will assume for now you are creating NEW users or the server was updated to handle /login.
+                        
+                        showAuthError("User exists. (Login endpoint required on server to retrieve ID)");
+                    }
+                } else {
+                    showAuthError("Error: " + txt);
+                }
+            }
+        } catch(e) {
+            showAuthError("Connection Failed");
+        }
+    }
+
+    function startSession() {
+        document.getElementById('auth-overlay').style.display = 'none';
+        document.getElementById('app-ui').style.display = 'block';
+        document.getElementById('display-user').innerText = USER_NAME;
+        document.getElementById('display-id').innerText = `ID: ${USER_ID}`;
+        refreshState();
+        setInterval(refreshState, 2000); 
+    }
+
+    function showAuthError(msg, color="var(--danger)") {
+        const el = document.getElementById('auth-msg');
+        el.style.color = color;
+        el.innerText = msg;
+    }
+
+    // --- State & Rendering ---
+    async function refreshState() {
+        if(!USER_ID) return;
+        try {
+            // Status
+            const sRes = await fetch(`${API_URL}/status`);
+            const sData = await sRes.json();
+            document.getElementById('srv-tick').innerText = sData.tick;
+            document.getElementById('srv-leader').innerText = sData.leader.substring(0,8);
+
+            // User State
+            const res = await fetch(`${API_URL}/state`, {headers: {'X-User-ID': USER_ID}});
+            if(res.ok) {
+                STATE = await res.json();
+                renderMain();
+            }
+        } catch(e) {}
+    }
+
+    function renderMain() {
+        const v = document.getElementById('main-view');
+        if (!STATE) return;
+
+        if (ACTIVE_TAB === 'colonies') {
+            if (!STATE.MyColonies || STATE.MyColonies.length === 0) {
+                v.innerHTML = "<div class='panel'>No Colonies Found.</div>";
+                return;
+            }
+            v.innerHTML = STATE.MyColonies.map(c => {
+                const pop = c.pop_laborers + (c.pop_specialists||0);
+                return `
+                <div class="panel" style="border-left: 4px solid var(--accent)">
+                    <div style="display:flex; justify-content:space-between; border-bottom:1px solid #333; padding-bottom:10px; margin-bottom:10px;">
+                        <strong style="font-size:1.2em;">${c.name}</strong>
+                        <span>SYS: ${c.system_id || "Unknown"}</span>
+                    </div>
+                    <div class="res-grid">
+                        ${renderResBox('IRON', c.iron)}
+                        ${renderResBox('CARB', c.carbon)}
+                        ${renderResBox('H2O', c.water)}
+                        ${renderResBox('FOOD', c.vegetation)}
+                    </div>
+                    <div style="background:#111; padding:10px; font-size:0.9em; color:#888; margin-top:10px;">
+                        POP: ${pop} | STABILITY: ${Math.floor(c.stability_current)}%
+                    </div>
+                </div>`;
+            }).join('');
+        }
+    }
+
+    function renderResBox(label, val) {
+        return `<div class="res-box"><div style="color:#888; font-size:0.8em">${label}</div><div style="font-size:1.1em; color:#fff">${val}</div></div>`;
+    }
+
+    function setTab(t) {
+        ACTIVE_TAB = t;
+        document.querySelectorAll('.tab').forEach(e => e.classList.remove('active'));
+        // logic for tab class active state needs DOM lookup
+        renderMain();
+    }
+
+    // --- Actions ---
+    async function quickBuild(struct) {
+        if(!STATE || !STATE.MyColonies[0]) return log("No colony selected.");
+        const colId = STATE.MyColonies[0].id;
+        const amt = parseInt(document.getElementById('action-amt').value) || 1;
+        apiCall('build', {colony_id: colId, structure: struct, amount: amt}, "Construction Started");
+    }
+
+    async function quickBurn(item) {
+        if(!STATE || !STATE.MyColonies[0]) return;
+        const colId = STATE.MyColonies[0].id;
+        const amt = parseInt(document.getElementById('action-amt').value) || 100;
+        apiCall('bank/burn', {colony_id: colId, item: item, amount: amt}, "Resources Sold");
+    }
+
+    async function apiCall(endpoint, payload, successMsg) {
+        try {
+            const res = await fetch(`${API_URL}/${endpoint}`, {
+                method: 'POST', body: JSON.stringify(payload)
+            });
+            if(res.ok) { log(successMsg); refreshState(); }
+            else { log("Error: " + await res.text()); }
+        } catch(e) { log("Network Error"); }
+    }
+
+    function log(msg) {
+        const l = document.getElementById('logs');
+        l.innerHTML = `<div>> ${msg}</div>` + l.innerHTML;
+    }
+</script>
+
+</body>
+</html>

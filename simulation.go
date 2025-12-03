@@ -19,7 +19,11 @@ func GetEfficiency(planetID int, resource string) float64 {
 
 // Phase 2.1: Snapshot Logic
 func snapshotWorld() {
-	rows, _ := db.Query(`SELECT id, buildings_json, pop_laborers, pop_specialists, iron, carbon, water, gold, vegetation, oxygen FROM colonies`)
+	rows, err := db.Query(`SELECT id, buildings_json, pop_laborers, pop_specialists, iron, carbon, water, gold, vegetation, oxygen FROM colonies`)
+	if err != nil {
+		ErrorLog.Printf("Snapshot Query Error: %v", err)
+		return
+	}
 	defer rows.Close()
 
 	var colonies []Colony
@@ -49,7 +53,15 @@ func tickWorld() {
 
 	CurrentTick++
 
-	rows, _ := db.Query(`SELECT id, buildings_json, pop_laborers, pop_specialists, iron, carbon, water, gold, vegetation, stability_current FROM colonies`)
+	rows, err := db.Query(`SELECT id, buildings_json, pop_laborers, pop_specialists, iron, carbon, water, gold, vegetation, stability_current FROM colonies`)
+	if err != nil {
+		// Log error but don't panic. This allows the server to keep running even if DB is briefly locked or invalid.
+		// Common cause: Tables not created yet on first boot tick.
+		if CurrentTick % 10 == 0 { // Don't spam logs every tick
+			ErrorLog.Printf("Tick Simulation Error (DB Query): %v", err)
+		}
+		return
+	}
 	
 	type ColUpdate struct {
 		ID int
@@ -159,26 +171,34 @@ func tickWorld() {
 	}
 	rows.Close()
 
-	tx, _ := db.Begin()
-	stmt, _ := tx.Prepare(`UPDATE colonies SET iron=?, carbon=?, water=?, gold=?, vegetation=?, pop_laborers=?, pop_specialists=?, stability_current=? WHERE id=?`)
-	for _, u := range updates {
-		stmt.Exec(u.Iron, u.Carbon, u.Water, u.Gold, u.Veg, u.PopLab, u.PopSpec, u.Stability, u.ID)
+	if len(updates) > 0 {
+		tx, err := db.Begin()
+		if err != nil {
+			ErrorLog.Printf("Tick Error (Tx Begin): %v", err)
+			return
+		}
+		stmt, _ := tx.Prepare(`UPDATE colonies SET iron=?, carbon=?, water=?, gold=?, vegetation=?, pop_laborers=?, pop_specialists=?, stability_current=? WHERE id=?`)
+		for _, u := range updates {
+			stmt.Exec(u.Iron, u.Carbon, u.Water, u.Gold, u.Veg, u.PopLab, u.PopSpec, u.Stability, u.ID)
+		}
+		stmt.Close()
+		tx.Commit()
 	}
-	stmt.Close()
-	tx.Commit()
 
 	// 5. Fleet Movement
-	fRows, _ := db.Query("SELECT id, dest_system, arrival_tick FROM fleets WHERE status='TRANSIT'")
-	for fRows.Next() {
-		var fid, arrival int
-		var dest string
-		fRows.Scan(&fid, &dest, &arrival)
-		if CurrentTick >= arrival {
-			db.Exec("UPDATE fleets SET status='ORBIT', origin_system=? WHERE id=?", dest, fid)
-			InfoLog.Printf("Fleet %d arrived at %s", fid, dest)
+	fRows, err := db.Query("SELECT id, dest_system, arrival_tick FROM fleets WHERE status='TRANSIT'")
+	if err == nil {
+		for fRows.Next() {
+			var fid, arrival int
+			var dest string
+			fRows.Scan(&fid, &dest, &arrival)
+			if CurrentTick >= arrival {
+				db.Exec("UPDATE fleets SET status='ORBIT', origin_system=? WHERE id=?", dest, fid)
+				InfoLog.Printf("Fleet %d arrived at %s", fid, dest)
+			}
 		}
+		fRows.Close()
 	}
-	fRows.Close()
 
 	// 6. Hash Chain
 	payload := fmt.Sprintf("%d-%s", CurrentTick, PreviousHash)

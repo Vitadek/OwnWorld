@@ -109,17 +109,25 @@ func main() {
 	// Client API
 	mux.HandleFunc("/api/register", handleRegister)
 	mux.HandleFunc("/api/build", handleBuild)
-	mux.HandleFunc("/api/bank/burn", handleBankBurn)     // <--- Added Bank Route
-	mux.HandleFunc("/api/fleet/launch", handleFleetLaunch) // <--- Added Fleet Launch Route
+	mux.HandleFunc("/api/bank/burn", handleBankBurn)
+	mux.HandleFunc("/api/fleet/launch", handleFleetLaunch)
+	
+	// NEW: State handler for detailed dashboard
+	mux.HandleFunc("/api/state", handleState)
+
 	mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"uuid": ServerUUID, "tick": CurrentTick, "leader": LeaderUUID,
 		})
 	})
 
+	// Stack Middlewares: CORS -> Security -> Mux
+	handler := middlewareSecurity(mux)
+	handler = middlewareCORS(handler)
+
 	server := &http.Server{
 		Addr:         ":8080",
-		Handler:      middlewareSecurity(mux),
+		Handler:      handler,
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 10 * time.Second,
 	}

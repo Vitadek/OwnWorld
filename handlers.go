@@ -11,18 +11,6 @@ import (
 	"time"
 )
 
-// --- Configuration ---
-
-// BasePrices defines the global standard value for items before local scarcity is applied.
-var BasePrices = map[string]int{
-	"iron":       1,
-	"carbon":     2,
-	"water":      1,
-	"vegetation": 2, // Food
-	"gold":       50,
-	"platinum":   100,
-}
-
 // --- Federation Handlers ---
 
 func processImmigration() {
@@ -152,7 +140,6 @@ func handleMap(w http.ResponseWriter, r *http.Request) {
 
 // --- Client Handlers ---
 
-// Phase 5.1: The Homestead Start (Goldilocks Search)
 func handleRegister(w http.ResponseWriter, r *http.Request) {
 	var req struct{ Username, Password string }
 	json.NewDecoder(r.Body).Decode(&req)
@@ -165,24 +152,19 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1. Create User
 	res, _ := db.Exec("INSERT INTO users (username, password_hash, is_local) VALUES (?,?, 1)", req.Username, hash)
 	uid, _ := res.LastInsertId()
 
-	// 2. Goldilocks Search: Find a viable planet
-	// We loop 50 times trying to find a planet with Vegetation Efficiency > 0.9.
-	// This ensures new players don't spawn on "dead" rocks.
 	var sysUUID string
 	var x, y, z int
 	
 	rand.Seed(time.Now().UnixNano())
 	found := false
 
+	// Homestead Goldilocks Search
 	for i := 0; i < 50; i++ {
-		// Temporary ID for checking efficiency
 		tempID := rand.Intn(1000000)
-		eff := GetEfficiency(tempID, "vegetation") // "vegetation" = food source
-		
+		eff := GetEfficiency(tempID, "vegetation") 
 		if eff > 0.9 {
 			sysUUID = fmt.Sprintf("sys-%d-%d", uid, tempID)
 			x, y, z = rand.Intn(100)-50, rand.Intn(100)-50, rand.Intn(100)-50
@@ -190,36 +172,81 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-
-	// Fallback if super unlucky
 	if !found {
 		sysUUID = fmt.Sprintf("sys-%d-fallback", uid)
 		x, y, z = 0, 0, 0
 	}
 
-	// 3. Create World
 	db.Exec("INSERT INTO solar_systems (id, x, y, z, star_type, owner_uuid) VALUES (?,?,?,?, 'G2V', ?)", sysUUID, x, y, z, ServerUUID)
-	// We use ID 1 for calculation simplicity in this MVP, but in prod we'd use LastInsertId
 	db.Exec("INSERT INTO planets (system_id, efficiency_seed, type) VALUES (?, ?, 'TERRAN')", sysUUID, "SEED")
 	
-	// 4. Create Colony
 	bJson, _ := json.Marshal(map[string]int{"farm": 5, "well": 5, "urban_housing": 10})
 	db.Exec(`INSERT INTO colonies (system_id, owner_uuid, name, buildings_json, pop_laborers, water, vegetation, iron) 
 	         VALUES (?, ?, ?, ?, 1000, 5000, 5000, 500)`, sysUUID, req.Username, req.Username+"'s Prime", string(bJson))
 
-	// 5. Spawn Ark Ship (New for Phase 5.1)
-	// Players start with a "Lifeboat" fleet in orbit.
 	db.Exec(`INSERT INTO fleets (owner_uuid, status, fuel, origin_system, dest_system, ark_ship) 
 			 VALUES (?, 'ORBIT', 1000, ?, ?, 1)`, req.Username, sysUUID, sysUUID)
 
 	json.NewEncoder(w).Encode(map[string]interface{}{"status": "registered", "user_id": uid, "system_id": sysUUID})
 }
 
-// Phase 5.2: The Bank (Scarcity Arbitrage)
+// Added per query: Missing /api/state handler
+func handleState(w http.ResponseWriter, r *http.Request) {
+	uidStr := r.Header.Get("X-User-ID")
+	var uid int
+	fmt.Sscanf(uidStr, "%d", &uid)
+
+	if uid == 0 {
+		http.Error(w, "Unauthorized", 401)
+		return
+	}
+
+	type StateResp struct {
+		ServerUUID string
+		Tick       int // Aligned with server tick
+		MyColonies []Colony
+		MyFleets   []Fleet
+		Costs      map[string]map[string]int
+		ShipCosts  map[string]map[string]int // Placeholder if needed
+	}
+
+	resp := StateResp{
+		ServerUUID: ServerUUID,
+		Tick:       CurrentTick,
+		Costs:      BuildingCosts,
+	}
+
+	// Fetch Colonies
+	rows, err := db.Query(`SELECT id, system_id, name, buildings_json, pop_laborers, pop_specialists, iron, carbon, water, gold, platinum, vegetation, stability_current FROM colonies WHERE owner_uuid = (SELECT username FROM users WHERE id=?)`, uid)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var c Colony
+			var bJson string
+			rows.Scan(&c.ID, &c.SystemID, &c.Name, &bJson, &c.PopLaborers, &c.PopSpecialists, &c.Iron, &c.Carbon, &c.Water, &c.Gold, &c.Platinum, &c.Vegetation, &c.StabilityCurrent)
+			json.Unmarshal([]byte(bJson), &c.Buildings)
+			resp.MyColonies = append(resp.MyColonies, c)
+		}
+	}
+
+	// Fetch Fleets
+	fRows, err := db.Query(`SELECT id, status, dest_system, ark_ship, fighters FROM fleets WHERE owner_uuid = (SELECT username FROM users WHERE id=?)`, uid)
+	if err == nil {
+		defer fRows.Close()
+		for fRows.Next() {
+			var f Fleet
+			fRows.Scan(&f.ID, &f.Status, &f.DestSystem, &f.ArkShip, &f.Fighters)
+			resp.MyFleets = append(resp.MyFleets, f)
+		}
+	}
+
+	json.NewEncoder(w).Encode(resp)
+}
+
 func handleBankBurn(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ColonyID int    `json:"colony_id"`
-		Item     string `json:"item"` // iron, carbon, gold
+		Item     string `json:"item"`
 		Amount   int    `json:"amount"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -227,29 +254,24 @@ func handleBankBurn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Amount < 1 {
-		http.Error(w, "Amount must be positive", 400)
-		return
-	}
-
+	// Simple Base Prices map for MVP
+	BasePrices := map[string]int{"iron": 1, "carbon": 2, "water": 1, "vegetation": 2, "gold": 50, "platinum": 100}
 	basePrice, ok := BasePrices[req.Item]
 	if !ok {
-		http.Error(w, "Bank does not accept this item", 400)
+		http.Error(w, "Invalid Item", 400)
 		return
 	}
 
 	stateLock.Lock()
 	defer stateLock.Unlock()
 
-	// 1. Check Balance
 	var currentAmount int
 	var userID int
-	// Note: We are using string building for column name. In prod, whitelist this to prevent injection.
-	// Since we checked BasePrices map above, req.Item is safe.
+	// Safe query using whitelisted item check above
 	query := fmt.Sprintf("SELECT %s, (SELECT id FROM users WHERE username=owner_uuid) FROM colonies WHERE id=?", req.Item)
 	err := db.QueryRow(query, req.ColonyID).Scan(&currentAmount, &userID)
 	if err != nil {
-		http.Error(w, "Colony not found", 404)
+		http.Error(w, "Colony/Item error", 404)
 		return
 	}
 
@@ -258,45 +280,24 @@ func handleBankBurn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Calculate Payout (Scarcity Logic)
-	// Payout = BasePrice * (1.0 / LocalEfficiency)
-	// High Efficiency (Abundant) -> Low Payout
-	// Low Efficiency (Scarce) -> High Payout
-	eff := GetEfficiency(req.ColonyID, req.Item) // using ColonyID as proxy for PlanetID
+	eff := GetEfficiency(req.ColonyID, req.Item)
 	multiplier := 1.0
-	if eff > 0.1 {
-		multiplier = 1.0 / eff
-	} else {
-		multiplier = 10.0 // Cap max multiplier
-	}
+	if eff > 0.1 { multiplier = 1.0 / eff } else { multiplier = 10.0 }
 	
-	payoutPerUnit := float64(basePrice) * multiplier
-	totalCredits := int(payoutPerUnit * float64(req.Amount))
+	totalCredits := int(float64(basePrice) * multiplier * float64(req.Amount))
 
-	// 3. Execute Transaction
 	tx, _ := db.Begin()
 	updateCol := fmt.Sprintf("UPDATE colonies SET %s = %s - ? WHERE id=?", req.Item, req.Item)
 	tx.Exec(updateCol, req.Amount, req.ColonyID)
 	tx.Exec("UPDATE users SET credits = credits + ? WHERE id=?", totalCredits, userID)
 	tx.Commit()
 
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"burned": req.Amount, 
-		"credits": totalCredits, 
-		"rate": payoutPerUnit,
-	})
+	json.NewEncoder(w).Encode(map[string]interface{}{"burned": req.Amount, "credits": totalCredits})
 }
 
-// Phase 5.4 Helper: Fuel Logic
 func calculateFuelCost(distance int, isPeer bool) int {
-	// Base cost per unit distance
 	cost := distance * 10 
-	
-	if isPeer {
-		// Federation Treaty: 2.5x cost
-		return int(float64(cost) * 2.5)
-	}
-	// Hostile Space: 10x cost
+	if isPeer { return int(float64(cost) * 2.5) }
 	return cost * 10
 }
 
@@ -304,7 +305,7 @@ func handleFleetLaunch(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		FleetID    int    `json:"fleet_id"`
 		DestSystem string `json:"dest_system"`
-		Distance   int    `json:"distance"` // Simplification: Client calculates distance for now
+		Distance   int    `json:"distance"`
 	}
 	json.NewDecoder(r.Body).Decode(&req)
 
@@ -318,12 +319,7 @@ func handleFleetLaunch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Fuel Calc
-	// Check if destination is a known peer
-	// For MVP, we assume if it's not local, it's unknown/hostile unless mapped
-	isPeer := false // Lookup logic here
-	cost := calculateFuelCost(req.Distance, isPeer)
-
+	cost := calculateFuelCost(req.Distance, false)
 	if f.Fuel < cost {
 		http.Error(w, fmt.Sprintf("Insufficient Fuel. Need %d", cost), 402)
 		return
@@ -343,16 +339,17 @@ func handleBuild(w http.ResponseWriter, r *http.Request) {
 		Amount    int    `json:"amount"`
 	}
 	json.NewDecoder(r.Body).Decode(&req)
-	if req.Amount < 1 {
-		req.Amount = 1
-	}
+	if req.Amount < 1 { req.Amount = 1 }
+	
 	cost, ok := BuildingCosts[req.Structure]
 	if !ok {
 		http.Error(w, "Unknown Structure", 400)
 		return
 	}
+
 	stateLock.Lock()
 	defer stateLock.Unlock()
+
 	var c Colony
 	var bJson string
 	err := db.QueryRow("SELECT buildings_json, iron, carbon, water FROM colonies WHERE id=?", req.ColonyID).Scan(&bJson, &c.Iron, &c.Carbon, &c.Water)
@@ -360,18 +357,21 @@ func handleBuild(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Colony Not Found", 404)
 		return
 	}
+
 	neededIron := cost["iron"] * req.Amount
 	neededCarbon := cost["carbon"] * req.Amount
+	
 	if c.Iron < neededIron || c.Carbon < neededCarbon {
 		http.Error(w, "Insufficient Funds", 402)
 		return
 	}
+
 	json.Unmarshal([]byte(bJson), &c.Buildings)
-	if c.Buildings == nil {
-		c.Buildings = make(map[string]int)
-	}
+	if c.Buildings == nil { c.Buildings = make(map[string]int) }
 	c.Buildings[req.Structure] += req.Amount
 	newBJson, _ := json.Marshal(c.Buildings)
-	db.Exec("UPDATE colonies SET iron=iron-?, carbon=carbon-?, buildings_json=? WHERE id=?", neededIron, neededCarbon, string(newBJson), req.ColonyID)
+
+	db.Exec("UPDATE colonies SET iron=iron-?, carbon=carbon-?, buildings_json=? WHERE id=?", 
+		neededIron, neededCarbon, string(newBJson), req.ColonyID)
 	w.Write([]byte("Build Complete"))
 }
