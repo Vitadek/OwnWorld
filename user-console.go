@@ -16,42 +16,96 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
-var dbFile = "./data/ownworld.db"
-var db *sql.DB // Global DB handle
+// --- Configuration System ---
+
+type Config struct {
+	DBFile string
+
+	// SMTP (Email)
+	SMTPHost string
+	SMTPPort string
+	SMTPUser string
+	SMTPPass string
+
+	// OIDC (SSO)
+	OIDCClientID     string
+	OIDCClientSecret string
+	OIDCIssuer       string
+}
+
+// LoadConfig reads from Environment Variables with defaults
+func LoadConfig() Config {
+	return Config{
+		DBFile: getEnv("OWNWORLD_DB_FILE", "./data/ownworld.db"),
+
+		SMTPHost: getEnv("SMTP_HOST", "smtp.example.com"),
+		SMTPPort: getEnv("SMTP_PORT", "587"),
+		SMTPUser: getEnv("SMTP_USER", ""),
+		SMTPPass: getEnv("SMTP_PASS", ""),
+
+		OIDCClientID:     getEnv("OIDC_CLIENT_ID", ""),
+		OIDCClientSecret: getEnv("OIDC_CLIENT_SECRET", ""),
+		OIDCIssuer:       getEnv("OIDC_ISSUER", "https://accounts.google.com"),
+	}
+}
+
+func getEnv(key, fallback string) string {
+	if value, exists := os.LookupEnv(key); exists {
+		return value
+	}
+	return fallback
+}
+
+// --- Global Vars ---
+
+var cfg Config
+var db *sql.DB
 
 func main() {
-	// 1. Ensure Data Directory Exists
-	if _, err := os.Stat("./data"); os.IsNotExist(err) {
-		os.MkdirAll("./data", 0700)
+	// 1. Load Configuration
+	cfg = LoadConfig()
+
+	// 2. Ensure Data Directory Exists (Extract dir from DBFile path)
+	// Simplified: assuming DBFile is always in a folder or local
+	if strings.Contains(cfg.DBFile, "/") {
+		dir := cfg.DBFile[:strings.LastIndex(cfg.DBFile, "/")]
+		if _, err := os.Stat(dir); os.IsNotExist(err) {
+			os.MkdirAll(dir, 0700)
+		}
 	}
 
-	// 2. Connect to DB
+	// 3. Connect to DB
 	var err error
-	db, err = sql.Open("sqlite3", dbFile)
+	db, err = sql.Open("sqlite3", cfg.DBFile)
 	if err != nil {
 		panic(err)
 	}
 	defer db.Close()
 
-	// 3. Security Lock
-	if err := os.Chmod(dbFile, 0600); err != nil {
+	// 4. Security Lock
+	if err := os.Chmod(cfg.DBFile, 0600); err != nil {
 		// Ignore if file doesn't exist yet
 	}
 
-	// Initialize tables if missing
+	// Initialize tables
 	initSchema()
-	os.Chmod(dbFile, 0600) // Re-apply lock
+	os.Chmod(cfg.DBFile, 0600)
 
 	rand.Seed(time.Now().UnixNano())
 
-	// 4. CLI Argument Mode (Non-Interactive)
+	// 5. CLI Argument Mode (Non-Interactive)
 	if len(os.Args) > 1 {
 		handleCLI()
 		return
 	}
 
-	// 5. Main Menu Loop (Interactive)
+	// 6. Main Menu Loop (Interactive)
 	scanner := bufio.NewScanner(os.Stdin)
+
+	fmt.Println("Loaded Configuration:")
+	fmt.Printf("- Database: %s\n", cfg.DBFile)
+	fmt.Printf("- SMTP: %s:%s\n", cfg.SMTPHost, cfg.SMTPPort)
+	fmt.Printf("- OIDC Issuer: %s\n", cfg.OIDCIssuer)
 
 	for {
 		fmt.Println("\n========================================")
@@ -103,7 +157,7 @@ func handleCLI() {
 			fmt.Println("Error: Invalid User ID")
 			return
 		}
-		
+
 		confirm := ""
 		if len(os.Args) > 3 {
 			confirm = os.Args[3]
@@ -114,7 +168,7 @@ func handleCLI() {
 			fmt.Printf("Example: %s delete %d CONFIRM\n", os.Args[0], id)
 			return
 		}
-		
+
 		performDelete(id)
 	default:
 		fmt.Println("Unknown command. Available commands: list, delete")
@@ -138,9 +192,9 @@ func listUsers() {
 		var id int
 		var user string
 		var coins int
-		
+
 		rows.Scan(&id, &user, &coins)
-		
+
 		// Count colonies
 		var colCount int
 		db.QueryRow("SELECT COUNT(*) FROM colonies WHERE user_id=?", id).Scan(&colCount)
@@ -218,7 +272,7 @@ func deleteUserInteractive(scanner *bufio.Scanner) {
 	fmt.Print("Enter User ID to DELETE: ")
 	scanner.Scan()
 	input := strings.TrimSpace(scanner.Text())
-	
+
 	id, err := strconv.Atoi(input)
 	if err != nil {
 		fmt.Println("Invalid ID.")
@@ -240,11 +294,15 @@ func deleteUserInteractive(scanner *bufio.Scanner) {
 func performDelete(id int) {
 	// 1. Delete Fleets
 	_, err := db.Exec("DELETE FROM fleets WHERE user_id=?", id)
-	if err != nil { fmt.Println("Error deleting fleets:", err) }
+	if err != nil {
+		fmt.Println("Error deleting fleets:", err)
+	}
 
 	// 2. Delete Colonies
 	_, err = db.Exec("DELETE FROM colonies WHERE user_id=?", id)
-	if err != nil { fmt.Println("Error deleting colonies:", err) }
+	if err != nil {
+		fmt.Println("Error deleting colonies:", err)
+	}
 
 	// 3. Delete User
 	res, err := db.Exec("DELETE FROM users WHERE id=?", id)
