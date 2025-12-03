@@ -96,7 +96,6 @@ func middlewareSecurity(next http.Handler) http.Handler {
 
 		contentType := r.Header.Get("Content-Type")
 
-		// Mode A: Federation Logic (Allow custom header OR protobuf for future compat)
 		if contentType == "application/x-ownworld-fed" || contentType == "application/x-protobuf" {
 			if !strings.Contains(r.URL.Path, "handshake") {
 				senderUUID := r.Header.Get("X-Server-UUID")
@@ -112,7 +111,6 @@ func middlewareSecurity(next http.Handler) http.Handler {
 			return
 		}
 
-		// Mode B: Client API
 		if strings.Contains(contentType, "application/json") || r.Method == "GET" || contentType == "" {
 			if strings.HasPrefix(r.URL.Path, "/api/") && !Config.CommandControl {
 				http.Error(w, "Node is in Infrastructure Mode (API Disabled)", 503)

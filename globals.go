@@ -56,7 +56,6 @@ var bufferPool = sync.Pool{
 	},
 }
 
-// Game Configuration
 var BuildingCosts = map[string]map[string]int{
 	"farm":          {"iron": 10},
 	"well":          {"iron": 10},

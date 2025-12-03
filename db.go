@@ -22,10 +22,10 @@ func initDB() {
 	db, err = sql.Open("sqlite3", dbFile+"?_journal_mode=WAL&_busy_timeout=5000")
 	if err != nil { panic(err) }
 
-	// Force WAL explicitly
+	// Force WAL
 	db.Exec("PRAGMA journal_mode=WAL;")
 
-	// 2. Define V2 Schema (UUIDs, Economy, Event Sourcing)
+	// 2. Define V3 Schema (UUIDs, Economy, Event Sourcing)
 	schema := `
 	CREATE TABLE IF NOT EXISTS system_meta (key TEXT PRIMARY KEY, value TEXT);
 
@@ -57,19 +57,16 @@ func initDB() {
 		owner_uuid TEXT, 
 		name TEXT,
 		
-		-- Population Strata
 		pop_laborers INTEGER DEFAULT 100,
 		pop_specialists INTEGER DEFAULT 0,
 		pop_elites INTEGER DEFAULT 0,
 
-		-- Resources (Full Table)
 		food INTEGER DEFAULT 1000, water INTEGER DEFAULT 1000,
 		iron INTEGER DEFAULT 0, carbon INTEGER DEFAULT 0, gold INTEGER DEFAULT 0,
 		platinum INTEGER DEFAULT 0, uranium INTEGER DEFAULT 0, diamond INTEGER DEFAULT 0,
 		vegetation INTEGER DEFAULT 0, oxygen INTEGER DEFAULT 1000,
 		fuel INTEGER DEFAULT 0,
 
-		-- Stability & Stats
 		stability_current REAL DEFAULT 100.0,
 		stability_target REAL DEFAULT 100.0,
 		martial_law BOOLEAN DEFAULT 0,
@@ -109,7 +106,6 @@ func initDB() {
 	
 	if _, err := db.Exec(schema); err != nil { panic(err) }
 
-	// 3. Initialize Server Identity (Keys & Genesis)
 	initIdentity()
 
 	// Resume Ledger State
@@ -132,6 +128,7 @@ func initIdentity() {
 		privHex := hex.EncodeToString(priv)
 		pubHex := hex.EncodeToString(pub)
 
+		// Fix: Use crypto/rand safely
 		rndBytes := make([]byte, 8)
 		rand.Read(rndBytes)
 		genesisData := fmt.Sprintf("GENESIS-%d-%x", time.Now().UnixNano(), rndBytes)

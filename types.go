@@ -40,10 +40,12 @@ type Colony struct {
 	BuildingsJSON string         `json:"buildings_json"`
 	Buildings     map[string]int `json:"buildings,omitempty"`
 
+	// Population Strata
 	PopLaborers    int `json:"pop_laborers"`
 	PopSpecialists int `json:"pop_specialists"`
 	PopElites      int `json:"pop_elites"`
 
+	// Resources (V3 Schema)
 	Food       int `json:"food"`
 	Water      int `json:"water"`
 	Iron       int `json:"iron"`
@@ -56,6 +58,7 @@ type Colony struct {
 	Oxygen     int `json:"oxygen"`
 	Fuel       int `json:"fuel"`
 
+	// Stability & Stats
 	StabilityCurrent float64 `json:"stability_current"`
 	StabilityTarget  float64 `json:"stability_target"`
 	MartialLaw       bool    `json:"martial_law"`

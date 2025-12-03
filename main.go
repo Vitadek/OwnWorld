@@ -103,11 +103,13 @@ func main() {
 	handler := middlewareSecurity(mux)
 	handler = middlewareCORS(handler)
 
+	// Secure Server Config (Slow Loris Protection)
 	server := &http.Server{
 		Addr:         ":8080",
 		Handler:      handler,
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  120 * time.Second,
 	}
 	
 	InfoLog.Printf("Node %s Listening on :8080", ServerUUID)

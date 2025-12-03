@@ -105,6 +105,7 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	found := false
 	
 	rand.Seed(time.Now().UnixNano())
+	// Goldilocks Loop
 	for i := 0; i < 50; i++ {
 		tempID := rand.Intn(1000000)
 		foodEff := GetEfficiency(tempID, "food")
@@ -162,6 +163,7 @@ func handleConstruct(w http.ResponseWriter, r *http.Request) {
 
 	var c Colony
 	var bJson string
+	// Fetch resources matching new schema
 	err := db.QueryRow("SELECT buildings_json, system_id, owner_uuid, iron, food, fuel, pop_laborers FROM colonies WHERE id=?", req.ColonyID).Scan(&bJson, &c.SystemID, &c.OwnerUUID, &c.Iron, &c.Food, &c.Fuel, &c.PopLaborers)
 	
 	if err == nil {
@@ -255,12 +257,11 @@ func handleDeploy(w http.ResponseWriter, r *http.Request) {
 	var arkCount int
 	err := db.QueryRow("SELECT origin_system, owner_uuid, ark_ship FROM fleets WHERE id=? AND status='ORBIT'", req.FleetID).Scan(&sysID, &owner, &arkCount)
 	if err != nil || arkCount < 1 {
-		http.Error(w, "No Ark Available or Fleet not in Orbit", 400)
+		http.Error(w, "No Ark Available", 400)
 		return
 	}
 
-	// FIXED: Ownership Check
-	// Ensure no colony already exists in this system
+	// FIXED: Ownership Check (Unowned Planet)
 	var colonyCount int
 	db.QueryRow("SELECT count(*) FROM colonies WHERE system_id=?", sysID).Scan(&colonyCount)
 	if colonyCount > 0 {
