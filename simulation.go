@@ -19,30 +19,22 @@ func GetEfficiency(planetID int, resource string) float64 {
 
 // Phase 2.1: Snapshot Logic
 func snapshotWorld() {
-	// 1. Serialize all Colonies
-	// Note: In a real massive MMO, we would stream this or do partial snapshots.
-	// For this Phase, we select all and dump.
-	rows, _ := db.Query(`SELECT id, buildings_json, pop_laborers, iron, carbon, water, gold, vegetation, oxygen FROM colonies`)
+	rows, _ := db.Query(`SELECT id, buildings_json, pop_laborers, pop_specialists, iron, carbon, water, gold, vegetation, oxygen FROM colonies`)
 	defer rows.Close()
 
 	var colonies []Colony
 	for rows.Next() {
 		var c Colony
 		var bJson string
-		rows.Scan(&c.ID, &bJson, &c.PopLaborers, &c.Iron, &c.Carbon, &c.Water, &c.Gold, &c.Vegetation, &c.Oxygen)
+		rows.Scan(&c.ID, &bJson, &c.PopLaborers, &c.PopSpecialists, &c.Iron, &c.Carbon, &c.Water, &c.Gold, &c.Vegetation, &c.Oxygen)
 		json.Unmarshal([]byte(bJson), &c.Buildings)
 		colonies = append(colonies, c)
 	}
 
-	// 2. Serialize & Compress
 	rawJSON, _ := json.Marshal(colonies)
 	compressed := compressLZ4(rawJSON)
-
-	// 3. Hash
 	hash := hashBLAKE3(compressed)
 
-	// 4. Persist
-	// We use CurrentTick / 100 as a rough "DayID" for this prototype
 	dayID := CurrentTick / 100
 	db.Exec("INSERT OR REPLACE INTO daily_snapshots (day_id, state_blob, final_hash) VALUES (?, ?, ?)", 
 		dayID, compressed, hash)
@@ -50,61 +42,132 @@ func snapshotWorld() {
 	InfoLog.Printf("Snapshot Day %d. Size: %d bytes. Hash: %s", dayID, len(compressed), hash[:8])
 }
 
+// Phase 5.3: Advanced Population & Stability Logic
 func tickWorld() {
 	stateLock.Lock()
 	defer stateLock.Unlock()
 
 	CurrentTick++
 
-	// 1. Colony Simulation
-	rows, _ := db.Query(`SELECT id, buildings_json, pop_laborers, iron, carbon, water, gold, vegetation FROM colonies`)
+	rows, _ := db.Query(`SELECT id, buildings_json, pop_laborers, pop_specialists, iron, carbon, water, gold, vegetation, stability_current FROM colonies`)
+	
 	type ColUpdate struct {
-		ID int; Iron, Carbon, Water, Gold, Veg int
-		PopLab int
+		ID int
+		Iron, Carbon, Water, Gold, Veg int
+		PopLab, PopSpec int
+		Stability float64
 	}
 	var updates []ColUpdate
 
 	for rows.Next() {
 		var c Colony
 		var bJson string
-		rows.Scan(&c.ID, &bJson, &c.PopLaborers, &c.Iron, &c.Carbon, &c.Water, &c.Gold, &c.Vegetation)
+		rows.Scan(&c.ID, &bJson, &c.PopLaborers, &c.PopSpecialists, &c.Iron, &c.Carbon, &c.Water, &c.Gold, &c.Vegetation, &c.StabilityCurrent)
 		json.Unmarshal([]byte(bJson), &c.Buildings)
-		pid := c.ID
+		
+		pid := c.ID // Proxy for planet ID
 		effIron := GetEfficiency(pid, "iron")
 		effWater := GetEfficiency(pid, "water")
-		prodIron := int(float64(c.Buildings["iron_mine"]*10) * effIron)
-		prodWater := int(float64(c.Buildings["well"]*20) * effWater)
-		prodFood := int(float64(c.Buildings["farm"]*20))
-		consFood := c.PopLaborers / 10
-		consWater := c.PopLaborers / 10
-		c.Iron += prodIron
-		c.Water += prodWater - consWater
-		c.Vegetation += prodFood - consFood
-		if c.Water < 0 {
-			c.Water = 0
+		
+		// 1. Production
+		// Stability Penalty: If stability < 50, production is halved.
+		prodMult := 1.0
+		if c.StabilityCurrent < 50.0 {
+			prodMult = 0.5
 		}
-		if c.Vegetation < 0 {
+		if c.StabilityCurrent < 25.0 {
+			prodMult = 0.0 // Riots stop production
+		}
+
+		prodIron := int(float64(c.Buildings["iron_mine"]*10) * effIron * prodMult)
+		prodWater := int(float64(c.Buildings["well"]*20) * effWater * prodMult)
+		prodFood := int(float64(c.Buildings["farm"]*20) * prodMult) // Veg = Food
+
+		// 2. Consumption (Classes)
+		// Laborers: 1 Food
+		// Specialists: 1 Food + 1 Carbon (Consumer Goods)
+		
+		foodDemand := c.PopLaborers + c.PopSpecialists
+		goodsDemand := c.PopSpecialists
+
+		eatenFood := 0
+		eatenGoods := 0
+
+		// Consume Food
+		if c.Vegetation >= foodDemand {
+			c.Vegetation -= foodDemand
+			eatenFood = foodDemand
+		} else {
+			eatenFood = c.Vegetation
 			c.Vegetation = 0
 		}
-		if c.Water > 0 && c.Vegetation > 0 {
-			c.PopLaborers += c.PopLaborers / 100
+
+		// Consume Goods (Carbon)
+		if c.Carbon >= goodsDemand {
+			c.Carbon -= goodsDemand
+			eatenGoods = goodsDemand
 		} else {
-			c.PopLaborers -= c.PopLaborers / 50
+			eatenGoods = c.Carbon
+			c.Carbon = 0
 		}
+
+		c.Iron += prodIron
+		c.Water += prodWater
+		c.Vegetation += prodFood
+
+		// 3. Growth & Death
+		// People die if they don't eat.
+		if eatenFood < foodDemand {
+			starving := foodDemand - eatenFood
+			// Kill laborers first (grim reality of simulation)
+			c.PopLaborers -= starving
+			if c.PopLaborers < 0 { c.PopLaborers = 0 }
+		} else {
+			// Growth (1%)
+			c.PopLaborers += c.PopLaborers / 100
+		}
+
+		// Specialists leave if no goods
+		if eatenGoods < goodsDemand {
+			leaving := goodsDemand - eatenGoods
+			c.PopSpecialists -= leaving
+			c.PopLaborers += leaving // Demoted to laborers
+		}
+
+		// 4. Stability Calculation
+		// Target = 100 - Crime
+		// Crime = (Pop / 1000) - (Police * 2)
+		totalPop := c.PopLaborers + c.PopSpecialists
+		police := c.Buildings["police_station"]
+		crime := (float64(totalPop) / 1000.0) - (float64(police) * 2.0)
+		if crime < 0 { crime = 0 }
+		
+		targetStability := 100.0 - (crime * 10.0)
+		if eatenFood < foodDemand { targetStability -= 50.0 } // Starvation causes unrest
+
+		// Drift towards target (Soft Cap)
+		// Stability moves 10% of the distance to target per tick
+		c.StabilityCurrent += (targetStability - c.StabilityCurrent) * 0.1
+
+		// Cap Resources
+		if c.Water < 0 { c.Water = 0 }
+
 		updates = append(updates, ColUpdate{
-			ID: c.ID, Iron: c.Iron, Carbon: c.Carbon, Water: c.Water, Gold: c.Gold, Veg: c.Vegetation, PopLab: c.PopLaborers,
+			ID: c.ID, Iron: c.Iron, Carbon: c.Carbon, Water: c.Water, Gold: c.Gold, Veg: c.Vegetation, 
+			PopLab: c.PopLaborers, PopSpec: c.PopSpecialists, Stability: c.StabilityCurrent,
 		})
 	}
 	rows.Close()
+
 	tx, _ := db.Begin()
-	stmt, _ := tx.Prepare(`UPDATE colonies SET iron=?, carbon=?, water=?, gold=?, vegetation=?, pop_laborers=? WHERE id=?`)
+	stmt, _ := tx.Prepare(`UPDATE colonies SET iron=?, carbon=?, water=?, gold=?, vegetation=?, pop_laborers=?, pop_specialists=?, stability_current=? WHERE id=?`)
 	for _, u := range updates {
-		stmt.Exec(u.Iron, u.Carbon, u.Water, u.Gold, u.Veg, u.PopLab, u.ID)
+		stmt.Exec(u.Iron, u.Carbon, u.Water, u.Gold, u.Veg, u.PopLab, u.PopSpec, u.Stability, u.ID)
 	}
 	stmt.Close()
 	tx.Commit()
 
-	// 2. Fleet Movement
+	// 5. Fleet Movement
 	fRows, _ := db.Query("SELECT id, dest_system, arrival_tick FROM fleets WHERE status='TRANSIT'")
 	for fRows.Next() {
 		var fid, arrival int
@@ -117,14 +180,13 @@ func tickWorld() {
 	}
 	fRows.Close()
 
-	// 3. Hash Chain
+	// 6. Hash Chain
 	payload := fmt.Sprintf("%d-%s", CurrentTick, PreviousHash)
 	finalBytes := blake3.Sum256([]byte(payload))
 	PreviousHash = hex.EncodeToString(finalBytes[:])
 
 	recalculateLeader()
 
-	// Phase 2.1: Periodic Snapshots
 	if CurrentTick % 100 == 0 {
 		go snapshotWorld()
 	}

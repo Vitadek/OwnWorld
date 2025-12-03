@@ -104,11 +104,13 @@ func main() {
 	mux.HandleFunc("/federation/handshake", handleHandshake)
 	mux.HandleFunc("/federation/sync", handleSyncLedger)
 	mux.HandleFunc("/federation/map", handleMap)
-	mux.HandleFunc("/federation/transaction", handleFederationTransaction) // <--- New Route
+	mux.HandleFunc("/federation/transaction", handleFederationTransaction)
 
 	// Client API
 	mux.HandleFunc("/api/register", handleRegister)
 	mux.HandleFunc("/api/build", handleBuild)
+	mux.HandleFunc("/api/bank/burn", handleBankBurn)     // <--- Added Bank Route
+	mux.HandleFunc("/api/fleet/launch", handleFleetLaunch) // <--- Added Fleet Launch Route
 	mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"uuid": ServerUUID, "tick": CurrentTick, "leader": LeaderUUID,
