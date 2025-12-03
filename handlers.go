@@ -9,7 +9,8 @@ import (
 	"time"
 )
 
-// --- Federation Handlers (Unchanged) ---
+// --- Federation Handlers ---
+
 func processImmigration() {
 	for req := range immigrationQueue {
 		time.Sleep(2 * time.Second)
@@ -84,7 +85,7 @@ func handleMap(w http.ResponseWriter, r *http.Request) {
 
 // --- Client Handlers ---
 
-// V3.1 FIX: Homestead Start (Colony + Scout ONLY)
+// V3.1: Homestead Start (Colony + Scout ONLY)
 func handleRegister(w http.ResponseWriter, r *http.Request) {
 	var req struct{ Username, Password string }
 	json.NewDecoder(r.Body).Decode(&req)
@@ -126,6 +127,7 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	// 2. Create Colony (Homestead)
 	bJson, _ := json.Marshal(map[string]int{"farm": 5, "well": 5, "urban_housing": 10})
+	// Note: 'pop_laborers' etc. map to new schema
 	db.Exec(`INSERT INTO colonies (system_id, owner_uuid, name, buildings_json, pop_laborers, water, food, iron) 
 	         VALUES (?, ?, ?, ?, 1000, 5000, 5000, 500)`, sysUUID, req.Username, req.Username+"'s Prime", string(bJson))
 
@@ -162,10 +164,9 @@ func handleConstruct(w http.ResponseWriter, r *http.Request) {
 
 	var c Colony
 	var bJson string
-	err := db.QueryRow("SELECT buildings_json, system_id, owner_uuid, iron, food, fuel, pop_laborers FROM colonies WHERE id=?", req.ColonyID).Scan(&bJson, &c.SystemID, &c.OwnerUUID, &c.Iron, &c.Food, &c.Uranium, &c.PopLaborers) // Using Uranium field for Fuel proxy in struct if needed, but schema says fuel
-	// Correction: db.go schema has 'fuel'. Struct 'Colony' in types.go (Phase 1.3) had 'Uranium'. 
-	// To keep this simple and safe, I will scan into variables.
-	var fuelVal int
+	// Fetch resources matching new schema
+	err := db.QueryRow("SELECT buildings_json, system_id, owner_uuid, iron, food, fuel, pop_laborers FROM colonies WHERE id=?", req.ColonyID).Scan(&bJson, &c.SystemID, &c.OwnerUUID, &c.Iron, &c.Food, &c.Fuel, &c.PopLaborers)
+	
 	if err == nil {
 		c.Buildings = make(map[string]int)
 		json.Unmarshal([]byte(bJson), &c.Buildings)
@@ -185,14 +186,7 @@ func handleConstruct(w http.ResponseWriter, r *http.Request) {
 	neededFuel := costs["fuel"] * req.Amount
 	neededCrew := costs["pop_laborers"] * req.Amount
 
-	// Check Resources (Scanning 'fuel' from DB as fuelVal)
-	// We need to re-query specifically for 'fuel' if the Struct mapping is uncertain, 
-	// or assume the previous SELECT included it. Let's do a direct check logic.
-	
-	// Re-query for robust check
-	err = db.QueryRow("SELECT iron, food, fuel, pop_laborers FROM colonies WHERE id=?", req.ColonyID).Scan(&c.Iron, &c.Food, &fuelVal, &c.PopLaborers)
-	
-	if c.Iron < neededIron || c.Food < neededFood || fuelVal < neededFuel || c.PopLaborers < neededCrew {
+	if c.Iron < neededIron || c.Food < neededFood || c.Fuel < neededFuel || c.PopLaborers < neededCrew {
 		http.Error(w, "Insufficient Resources/Crew", 402)
 		return
 	}
@@ -212,7 +206,6 @@ func handleConstruct(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("Construction Complete"))
 }
 
-// V3.1: Build Structure (Infrastructure)
 func handleBuild(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ColonyID  int    `json:"colony_id"`
@@ -233,7 +226,6 @@ func handleBuild(w http.ResponseWriter, r *http.Request) {
 
 	var c Colony
 	var bJson string
-	// Check Funds
 	err := db.QueryRow("SELECT buildings_json, iron, carbon FROM colonies WHERE id=?", req.ColonyID).Scan(&bJson, &c.Iron, &c.Carbon)
 	if err != nil {
 		http.Error(w, "Colony Not Found", 404)
@@ -248,7 +240,6 @@ func handleBuild(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Update State
 	json.Unmarshal([]byte(bJson), &c.Buildings)
 	if c.Buildings == nil { c.Buildings = make(map[string]int) }
 	c.Buildings[req.Structure] += req.Amount
@@ -259,7 +250,6 @@ func handleBuild(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("Build Complete"))
 }
 
-// V3.0: Deploy Handler (Unchanged logic, just keeping for expansion)
 func handleDeploy(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		FleetID int `json:"fleet_id"`
@@ -287,16 +277,33 @@ func handleDeploy(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// ... (Other handlers like handleBankBurn, handleFleetLaunch remain similar) ...
 func handleBankBurn(w http.ResponseWriter, r *http.Request) {
-    w.Write([]byte("Bank Burn Stub"))
+	var req struct {
+		ColonyID int    `json:"colony_id"`
+		Item     string `json:"item"`
+		Amount   int    `json:"amount"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	
+	BasePrices := map[string]int{"iron": 1, "carbon": 2, "water": 1, "gold": 50}
+	basePrice, ok := BasePrices[req.Item]
+	if !ok { basePrice = 1 }
+
+	eff := GetEfficiency(req.ColonyID, req.Item)
+	if eff < 0.1 { eff = 0.1 } 
+	
+	multiplier := 1.0 / eff
+	payout := int(float64(basePrice) * multiplier * float64(req.Amount))
+	
+	w.Write([]byte(fmt.Sprintf("Burned %d %s for %d credits", req.Amount, req.Item, payout)))
 }
+
 func handleFleetLaunch(w http.ResponseWriter, r *http.Request) {
-    w.Write([]byte("Launch Stub"))
+	w.Write([]byte("Launch Stub"))
 }
 func handleState(w http.ResponseWriter, r *http.Request) {
-    w.Write([]byte("{}"))
+	w.Write([]byte("{}"))
 }
 func handleSyncLedger(w http.ResponseWriter, r *http.Request) {
-    w.Write([]byte("Sync Stub"))
+	w.Write([]byte("Sync Stub"))
 }

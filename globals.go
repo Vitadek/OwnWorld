@@ -62,7 +62,6 @@ var BuildingCosts = map[string]map[string]int{
 	"well":          {"iron": 10},
 	"iron_mine":     {"carbon": 50},
 	"urban_housing": {"iron": 100, "carbon": 100},
-	// The Infrastructure Gate
 	"shipyard":      {"iron": 1000, "carbon": 500},
 }
 
@@ -71,8 +70,8 @@ var UnitCosts = map[string]map[string]int{
 	"ark_ship": {
 		"iron": 5000, 
 		"food": 5000, 
-		"fuel": 500, // Requires Fuel in Colony Storage
-		"pop_laborers": 100, // Crew Requirement
+		"fuel": 500, 
+		"pop_laborers": 100,
 	},
 	"scout": {
 		"iron": 500,

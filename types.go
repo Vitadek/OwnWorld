@@ -5,27 +5,26 @@ import (
 	"time"
 )
 
-// --- Domain Models (pkg/types) ---
+// --- Domain Models ---
 
 type User struct {
-	ID                         int    `json:"id"`
-	GlobalUUID                 string `json:"global_uuid"` // Unique across Federation
-	Username                   string `json:"username"`
-	PasswordHash               string `json:"password_hash"`
-	Credits                    int    `json:"credits"`
-	IsLocal                    bool   `json:"is_local"`
-	Ed25519EncryptedPrivateKey []byte `json:"ed25519_encrypted_private_key"`
+	ID            int    `json:"id"`
+	GlobalUUID    string `json:"global_uuid"` // BLAKE3 Federation ID
+	Username      string `json:"username"`
+	PasswordHash  string `json:"password_hash"`
+	Credits       int    `json:"credits"`
+	IsLocal       bool   `json:"is_local"`
+	Ed25519PubKey string `json:"ed25519_pubkey"`
 }
 
 type SolarSystem struct {
-	ID          string  `json:"id"`
-	X           int     `json:"x"`
-	Y           int     `json:"y"`
-	Z           int     `json:"z"`
-	StarType    string  `json:"star_type"`
-	OwnerUUID   string  `json:"owner_uuid"`
-	TaxRate     float64 `json:"tax_rate"`
-	IsFederated bool    `json:"is_federated"`
+	ID        string  `json:"id"`
+	X         int     `json:"x"`
+	Y         int     `json:"y"`
+	Z         int     `json:"z"`
+	StarType  string  `json:"star_type"`
+	OwnerUUID string  `json:"owner_uuid"`
+	TaxRate   float64 `json:"tax_rate"`
 }
 
 type Planet struct {
@@ -36,66 +35,57 @@ type Planet struct {
 }
 
 type Colony struct {
-	ID            int            `json:"id"`
-	SystemID      string         `json:"system_id"`
-	OwnerUUID     string         `json:"owner_uuid"`
-	Name          string         `json:"name"`
-	BuildingsJSON string         `json:"buildings_json"`
+	ID            int    `json:"id"`
+	SystemID      string `json:"system_id"`
+	OwnerUUID     string `json:"owner_uuid"`
+	Name          string `json:"name"`
+	BuildingsJSON string `json:"buildings_json"`
 	Buildings     map[string]int `json:"buildings,omitempty"`
 
-	// Tier 1 Resources (Basic Construction)
-	Iron     int `json:"iron"`
-	Carbon   int `json:"carbon"`
-	Gold     int `json:"gold"`
-	Uranium  int `json:"uranium"`
-	Platinum int `json:"platinum"`
-	Diamond  int `json:"diamond"`
+	// Population Strata
+	PopLaborers    int `json:"pop_laborers"`
+	PopSpecialists int `json:"pop_specialists"`
+	PopElites      int `json:"pop_elites"`
 
-	// Tier 2 Resources (Sustenance & Atmosphere)
-	Food       int `json:"food"` // Merged Vegetation/Food
+	// Resources (Full Table)
+	Food       int `json:"food"`
 	Water      int `json:"water"`
+	Iron       int `json:"iron"`
+	Carbon     int `json:"carbon"`
+	Gold       int `json:"gold"`
+	Platinum   int `json:"platinum"`
+	Uranium    int `json:"uranium"`
+	Diamond    int `json:"diamond"`
+	Vegetation int `json:"vegetation"`
 	Oxygen     int `json:"oxygen"`
-	Vegetation int `json:"vegetation"` // Raw input for food
+	Fuel       int `json:"fuel"` // FIXED: Added missing Fuel field
 
-	// Society & Strata
-	PopLaborers      int     `json:"pop_laborers"`
-	PopSpecialists   int     `json:"pop_specialists"`
-	PopElites        int     `json:"pop_elites"`
+	// Stability & Stats
 	StabilityCurrent float64 `json:"stability_current"`
 	StabilityTarget  float64 `json:"stability_target"`
-	CrimeRate        float64 `json:"crime_rate"`
 	MartialLaw       bool    `json:"martial_law"`
 }
 
 type Fleet struct {
-	ID            int                    `json:"id"`
-	OwnerUUID     string                 `json:"owner_uuid"`
-	Status        string                 `json:"status"` // ORBIT, TRANSIT
-	Fuel          int                    `json:"fuel"`
-	OriginSystem  string                 `json:"origin_system"`
-	DestSystem    string                 `json:"dest_system"`
-	DepartureTick int                    `json:"departure_tick"`
-	ArrivalTick   int                    `json:"arrival_tick"`
-	StartCoords   map[string]interface{} `json:"start_coords"` // JSON
-	DestCoords    map[string]interface{} `json:"dest_coords"`  // JSON
+	ID            int    `json:"id"`
+	OwnerUUID     string `json:"owner_uuid"`
+	Status        string `json:"status"` // ORBIT, TRANSIT
+	
+	// Navigation
+	OriginSystem  string `json:"origin_system"`
+	DestSystem    string `json:"dest_system"`
+	DepartureTick int    `json:"departure_tick"`
+	ArrivalTick   int    `json:"arrival_tick"`
 
 	// Composition
 	ArkShip  int `json:"ark_ship"`
 	Fighters int `json:"fighters"`
 	Frigates int `json:"frigates"`
 	Haulers  int `json:"haulers"`
+	Fuel     int `json:"fuel"`
 }
 
-// --- Event Sourcing (pkg/core) ---
-
-type TransactionLog struct {
-	ID         int    `json:"id"`
-	Tick       int    `json:"tick"`
-	ActionType string `json:"action_type"`
-	Payload    []byte `json:"payload"`
-}
-
-// --- Network Models (pkg/federation) ---
+// --- Network & Consensus Models ---
 
 type HandshakeRequest struct {
 	UUID        string `json:"uuid"`
@@ -104,11 +94,10 @@ type HandshakeRequest struct {
 	Address     string `json:"address"`
 }
 
-// TransactionRequest now requires strict Signature enforcement
 type TransactionRequest struct {
 	UUID      string `json:"uuid"`
 	Tick      int    `json:"tick"`
-	Type      string `json:"type"` // FLEET_ARRIVAL, MARKET_TRADE
+	Type      string `json:"type"`
 	Payload   []byte `json:"payload"`
 	Signature []byte `json:"signature"`
 }
@@ -123,23 +112,15 @@ type Peer struct {
 	Status    string            `json:"status"`
 }
 
-type LedgerEntry struct {
-	Tick      int    `json:"tick"`
-	Timestamp int64  `json:"timestamp"`
-	PrevHash  string `json:"prev_hash"`
-	FinalHash string `json:"final_hash"`
-}
-
 type LedgerPayload struct {
 	UUID      string      `json:"uuid"`
 	Tick      int         `json:"tick"`
-	StampHash string      `json:"stamp_hash"`
 	PeerCount int         `json:"peer_count"`
 	Entry     LedgerEntry `json:"entry"`
 }
 
-type GenesisState struct {
-	Seed      string `json:"seed"`
-	Timestamp int64  `json:"timestamp"`
-	PubKey    string `json:"pub_key"`
+type LedgerEntry struct {
+	Tick      int    `json:"tick"`
+	FinalHash string `json:"final_hash"`
+	PrevHash  string `json:"prev_hash"`
 }

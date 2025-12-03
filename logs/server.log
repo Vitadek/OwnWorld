@@ -647,3 +647,11 @@ INFO: 2025/12/02 21:03:45 main.go:72: OWNWORLD BOOT SEQUENCE (V3.1)
 INFO: 2025/12/02 21:03:45 main.go:73: Mode: promiscuous | Control: true
 INFO: 2025/12/02 21:03:45 main.go:113: Node e31840380ce3c61044b8a972ff914c1bed2b03f9d7e134665408f239521f3a16 Listening on :8080
 INFO: 2025/12/02 21:03:45 main.go:28: No SEED_NODES found. Starting as Lonely/Genesis Node.
+INFO: 2025/12/02 21:12:50 main.go:72: OWNWORLD BOOT SEQUENCE (V3.1)
+INFO: 2025/12/02 21:12:50 main.go:73: Mode: promiscuous | Control: true
+INFO: 2025/12/02 21:12:50 main.go:113: Node f1bf4dc39ce0697603afe49e09d0481096ff532c5bac04c244158cfb221e4e78 Listening on :8080
+INFO: 2025/12/02 21:12:50 main.go:28: No SEED_NODES found. Starting as Lonely/Genesis Node.
+INFO: 2025/12/02 21:15:55 main.go:72: OWNWORLD BOOT SEQUENCE (V3.1)
+INFO: 2025/12/02 21:15:55 main.go:73: Mode: promiscuous | Control: true
+INFO: 2025/12/02 21:15:55 main.go:113: Node f1bf4dc39ce0697603afe49e09d0481096ff532c5bac04c244158cfb221e4e78 Listening on :8080
+INFO: 2025/12/02 21:15:55 main.go:28: No SEED_NODES found. Starting as Lonely/Genesis Node.

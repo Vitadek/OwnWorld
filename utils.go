@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"io"
 	"log"
-	"math/rand"
 	"net"
 	"net/http"
 	"os"
@@ -15,10 +14,10 @@ import (
 
 	"github.com/pierrec/lz4/v4"
 	"golang.org/x/time/rate"
-	"lukechampine.com/blake3"
+	"lukechampine.com/blake3" // FIXED: Canonical Import Path
 )
 
-// NOTE: bufferPool is defined in globals.go, so we do not redeclare it here.
+// NOTE: bufferPool is defined in globals.go
 
 func setupLogging() {
 	logDir := "./logs"
@@ -31,7 +30,6 @@ func setupLogging() {
 	ErrorLog = log.New(fErr, "ERROR: ", log.Ldate|log.Ltime|log.Lshortfile)
 }
 
-// Renamed back to legacy names to satisfy handlers.go and simulation.go calls
 func compressLZ4(src []byte) []byte {
 	buf := bufferPool.Get().(*bytes.Buffer)
 	buf.Reset()
@@ -84,11 +82,9 @@ func getLimiter(ip string) *rate.Limiter {
 
 func middlewareSecurity(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Layer 1: IP Rate Limit
 		ip, _, _ := net.SplitHostPort(r.RemoteAddr)
-		// Fallback for localhost testing
 		if ip == "::1" || ip == "127.0.0.1" {
-			// Looser limit for localhost
+			// Localhost bypass
 		} else if !getLimiter(ip).Allow() {
 			http.Error(w, "Rate Limit Exceeded", 429)
 			return
@@ -103,20 +99,15 @@ func middlewareSecurity(next http.Handler) http.Handler {
 
 		// Mode A: Federation Logic
 		if contentType == "application/x-ownworld-fed" {
-			// Layer 2: UUID Allowlist (Skip for Handshake)
+			// Layer 2: UUID Allowlist
 			if !strings.Contains(r.URL.Path, "handshake") {
 				senderUUID := r.Header.Get("X-Server-UUID")
 				peerLock.RLock()
 				_, known := peers[senderUUID]
 				peerLock.RUnlock()
 				if !known {
-					http.Error(w, "Unknown Peer (Not Federated)", 403)
+					http.Error(w, "Unknown Peer", 403)
 					return
-				}
-				
-				// Layer 3: Probabilistic Verification could go here
-				if strings.Contains(r.URL.Path, "sync") && rand.Float32() < 0.1 {
-					// Verify logic placeholder
 				}
 			}
 			next.ServeHTTP(w, r)
