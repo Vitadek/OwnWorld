@@ -5,11 +5,11 @@ import (
 	"time"
 )
 
-// --- Database Models ---
+// --- Domain Models (pkg/types) ---
 
 type User struct {
 	ID                         int    `json:"id"`
-	GlobalUUID                 string `json:"global_uuid"`
+	GlobalUUID                 string `json:"global_uuid"` // Unique across Federation
 	Username                   string `json:"username"`
 	PasswordHash               string `json:"password_hash"`
 	Credits                    int    `json:"credits"`
@@ -18,13 +18,14 @@ type User struct {
 }
 
 type SolarSystem struct {
-	ID        string  `json:"id"`
-	X         int     `json:"x"`
-	Y         int     `json:"y"`
-	Z         int     `json:"z"`
-	StarType  string  `json:"star_type"`
-	OwnerUUID string  `json:"owner_uuid"`
-	TaxRate   float64 `json:"tax_rate"`
+	ID          string  `json:"id"`
+	X           int     `json:"x"`
+	Y           int     `json:"y"`
+	Z           int     `json:"z"`
+	StarType    string  `json:"star_type"`
+	OwnerUUID   string  `json:"owner_uuid"`
+	TaxRate     float64 `json:"tax_rate"`
+	IsFederated bool    `json:"is_federated"`
 }
 
 type Planet struct {
@@ -42,37 +43,41 @@ type Colony struct {
 	BuildingsJSON string         `json:"buildings_json"`
 	Buildings     map[string]int `json:"buildings,omitempty"`
 
-	// Resources (Phase 1.2 Upgrade)
-	Iron       int `json:"iron"`
-	Carbon     int `json:"carbon"`
-	Water      int `json:"water"`
-	Gold       int `json:"gold"`
-	Platinum   int `json:"platinum"`
-	Uranium    int `json:"uranium"`
-	Diamond    int `json:"diamond"`
-	Vegetation int `json:"vegetation"`
-	Oxygen     int `json:"oxygen"`
+	// Tier 1 Resources (Basic Construction)
+	Iron     int `json:"iron"`
+	Carbon   int `json:"carbon"`
+	Gold     int `json:"gold"`
+	Uranium  int `json:"uranium"`
+	Platinum int `json:"platinum"`
+	Diamond  int `json:"diamond"`
 
-	// Stats
+	// Tier 2 Resources (Sustenance & Atmosphere)
+	Food       int `json:"food"` // Merged Vegetation/Food
+	Water      int `json:"water"`
+	Oxygen     int `json:"oxygen"`
+	Vegetation int `json:"vegetation"` // Raw input for food
+
+	// Society & Strata
 	PopLaborers      int     `json:"pop_laborers"`
 	PopSpecialists   int     `json:"pop_specialists"`
 	PopElites        int     `json:"pop_elites"`
 	StabilityCurrent float64 `json:"stability_current"`
 	StabilityTarget  float64 `json:"stability_target"`
+	CrimeRate        float64 `json:"crime_rate"`
 	MartialLaw       bool    `json:"martial_law"`
 }
 
 type Fleet struct {
-	ID            int    `json:"id"`
-	OwnerUUID     string `json:"owner_uuid"`
-	Status        string `json:"status"` // ORBIT, TRANSIT
-	Fuel          int    `json:"fuel"`
-	OriginSystem  string `json:"origin_system"`
-	DestSystem    string `json:"dest_system"`
-	DepartureTick int    `json:"departure_tick"`
-	ArrivalTick   int    `json:"arrival_tick"`
-	StartCoords   string `json:"start_coords"`
-	DestCoords    string `json:"dest_coords"`
+	ID            int                    `json:"id"`
+	OwnerUUID     string                 `json:"owner_uuid"`
+	Status        string                 `json:"status"` // ORBIT, TRANSIT
+	Fuel          int                    `json:"fuel"`
+	OriginSystem  string                 `json:"origin_system"`
+	DestSystem    string                 `json:"dest_system"`
+	DepartureTick int                    `json:"departure_tick"`
+	ArrivalTick   int                    `json:"arrival_tick"`
+	StartCoords   map[string]interface{} `json:"start_coords"` // JSON
+	DestCoords    map[string]interface{} `json:"dest_coords"`  // JSON
 
 	// Composition
 	ArkShip  int `json:"ark_ship"`
@@ -81,14 +86,16 @@ type Fleet struct {
 	Haulers  int `json:"haulers"`
 }
 
-// --- Network Models ---
+// --- Event Sourcing (pkg/core) ---
 
-type Heartbeat struct {
-	UUID      string `json:"uuid"`
-	Tick      int    `json:"tick"`
-	Timestamp int64  `json:"timestamp"`
-	Signature []byte `json:"signature"`
+type TransactionLog struct {
+	ID         int    `json:"id"`
+	Tick       int    `json:"tick"`
+	ActionType string `json:"action_type"`
+	Payload    []byte `json:"payload"`
 }
+
+// --- Network Models (pkg/federation) ---
 
 type HandshakeRequest struct {
 	UUID        string `json:"uuid"`
@@ -97,13 +104,13 @@ type HandshakeRequest struct {
 	Address     string `json:"address"`
 }
 
-// Phase 3.3: Transaction Protocol
+// TransactionRequest now requires strict Signature enforcement
 type TransactionRequest struct {
-	UUID      string `json:"uuid"`      // Sender Server UUID
-	Tick      int    `json:"tick"`      // Sender Tick (Lag Check)
-	Type      string `json:"type"`      // FLEET_ARRIVAL, MARKET_TRADE
-	Payload   []byte `json:"payload"`   // Inner JSON
-	Signature []byte `json:"signature"` // Ed25519 of Payload
+	UUID      string `json:"uuid"`
+	Tick      int    `json:"tick"`
+	Type      string `json:"type"` // FLEET_ARRIVAL, MARKET_TRADE
+	Payload   []byte `json:"payload"`
+	Signature []byte `json:"signature"`
 }
 
 type Peer struct {
@@ -115,8 +122,6 @@ type Peer struct {
 	PublicKey ed25519.PublicKey `json:"-"`
 	Status    string            `json:"status"`
 }
-
-// --- Consensus Models ---
 
 type LedgerEntry struct {
 	Tick      int    `json:"tick"`

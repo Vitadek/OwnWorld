@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"io"
 	"log"
+	"math/rand"
 	"net"
 	"net/http"
 	"os"
@@ -16,6 +17,8 @@ import (
 	"golang.org/x/time/rate"
 	"lukechampine.com/blake3"
 )
+
+// NOTE: bufferPool is defined in globals.go, so we do not redeclare it here.
 
 func setupLogging() {
 	logDir := "./logs"
@@ -28,6 +31,7 @@ func setupLogging() {
 	ErrorLog = log.New(fErr, "ERROR: ", log.Ldate|log.Ltime|log.Lshortfile)
 }
 
+// Renamed back to legacy names to satisfy handlers.go and simulation.go calls
 func compressLZ4(src []byte) []byte {
 	buf := bufferPool.Get().(*bytes.Buffer)
 	buf.Reset()
@@ -56,7 +60,6 @@ func hashBLAKE3(data []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// Phase 2.2: Signature Helpers
 func SignMessage(privKey ed25519.PrivateKey, msg []byte) []byte {
 	return ed25519.Sign(privKey, msg)
 }
@@ -65,43 +68,32 @@ func VerifySignature(pubKey ed25519.PublicKey, msg, sig []byte) bool {
 	return ed25519.Verify(pubKey, msg, sig)
 }
 
+// --- Middleware & Security ---
+
 func getLimiter(ip string) *rate.Limiter {
 	ipLock.Lock()
 	defer ipLock.Unlock()
 	limiter, exists := ipLimiters[ip]
 	if !exists {
-		// UPDATED: Increased limit to 10 req/s with burst of 20 to prevent 429s during polling
-		limiter = rate.NewLimiter(10, 20)
+		// Layer 1: IP Rate Limiting (Strict 1 req/s, Burst 5)
+		limiter = rate.NewLimiter(1, 5)
 		ipLimiters[ip] = limiter
 	}
 	return limiter
 }
 
-// middlewareCORS adds headers to allow browser clients
-func middlewareCORS(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, X-User-ID")
-
-		if r.Method == "OPTIONS" {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-
-		next.ServeHTTP(w, r)
-	})
-}
-
 func middlewareSecurity(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Layer 1: IP Rate Limit
 		ip, _, _ := net.SplitHostPort(r.RemoteAddr)
-		if !getLimiter(ip).Allow() {
-			http.Error(w, "Rate Limit", 429)
+		// Fallback for localhost testing
+		if ip == "::1" || ip == "127.0.0.1" {
+			// Looser limit for localhost
+		} else if !getLimiter(ip).Allow() {
+			http.Error(w, "Rate Limit Exceeded", 429)
 			return
 		}
 
-		// Allow OPTIONS (CORS Preflight) to skip security checks
 		if r.Method == "OPTIONS" {
 			next.ServeHTTP(w, r)
 			return
@@ -109,16 +101,22 @@ func middlewareSecurity(next http.Handler) http.Handler {
 
 		contentType := r.Header.Get("Content-Type")
 
-		// Mode A: Federation
+		// Mode A: Federation Logic
 		if contentType == "application/x-ownworld-fed" {
+			// Layer 2: UUID Allowlist (Skip for Handshake)
 			if !strings.Contains(r.URL.Path, "handshake") {
 				senderUUID := r.Header.Get("X-Server-UUID")
 				peerLock.RLock()
 				_, known := peers[senderUUID]
 				peerLock.RUnlock()
 				if !known {
-					http.Error(w, "Unknown Peer", 403)
+					http.Error(w, "Unknown Peer (Not Federated)", 403)
 					return
+				}
+				
+				// Layer 3: Probabilistic Verification could go here
+				if strings.Contains(r.URL.Path, "sync") && rand.Float32() < 0.1 {
+					// Verify logic placeholder
 				}
 			}
 			next.ServeHTTP(w, r)
@@ -126,19 +124,30 @@ func middlewareSecurity(next http.Handler) http.Handler {
 		}
 
 		// Mode B: Client API
-		// Robust check: Allow if Content-Type contains "application/json" (handles charset)
-		// OR if method is GET (often no body/type)
-		// OR if type is empty (some clients be lazy)
-		// OR if type is "text/plain;charset=UTF-8" (sometimes sent by fetch on errors/text responses)
-		if r.Method == "GET" || strings.Contains(contentType, "application/json") || contentType == "" || strings.Contains(contentType, "text/plain") {
+		if strings.Contains(contentType, "application/json") || r.Method == "GET" || contentType == "" {
 			if strings.HasPrefix(r.URL.Path, "/api/") && !Config.CommandControl {
-				http.Error(w, "Node is in Infrastructure Mode (No User API)", 503)
+				http.Error(w, "Node is in Infrastructure Mode (API Disabled)", 503)
 				return
 			}
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		http.Error(w, "Bad Type: "+contentType, 415)
+		http.Error(w, "Unsupported Content-Type", 415)
+	})
+}
+
+func middlewareCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, X-User-ID, X-Server-UUID")
+
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		next.ServeHTTP(w, r)
 	})
 }

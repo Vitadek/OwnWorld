@@ -635,3 +635,10 @@ INFO: 2025/12/02 20:19:32 main.go:94: Phase 6: Infrastructure... [OK] (Mode: pro
 INFO: 2025/12/02 20:19:32 main.go:134: Node 32027b1a6690f06c10fb82555732f5050721c5ff55d5a165e765cb5e867a7fbd Listening on :8080
 INFO: 2025/12/02 20:19:32 simulation.go:216: Starting Galaxy Engine...
 INFO: 2025/12/02 20:19:32 main.go:30: No SEED_NODES found. Starting as Lonely/Genesis Node.
+INFO: 2025/12/02 20:49:19 db.go:121: First Boot Detected. Generating Identity...
+INFO: 2025/12/02 20:49:19 db.go:153: Identity Generated: ef9e6dcd9c40236bbeace30b4a613f5f65f09ddbeb9f3231d242cd033a67dd54
+INFO: 2025/12/02 20:49:19 main.go:77: OWNWORLD BOOT SEQUENCE
+INFO: 2025/12/02 20:49:19 main.go:78: Mode: promiscuous | Control: true
+INFO: 2025/12/02 20:49:19 main.go:30: No SEED_NODES found. Starting as Lonely/Genesis Node.
+INFO: 2025/12/02 20:49:19 main.go:116: Node ef9e6dcd9c40236bbeace30b4a613f5f65f09ddbeb9f3231d242cd033a67dd54 Listening on :8080
+INFO: 2025/12/02 20:49:19 simulation.go:114: Starting Galaxy Engine...
