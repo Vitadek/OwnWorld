@@ -6,9 +6,9 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
+	"os"
+	"strconv" // Safe, lightweight, 0-allocation
 	"time"
-	"os"  
-	"strconv"
 )
 
 // --- Federation Handlers ---
@@ -85,9 +85,58 @@ func handleMap(w http.ResponseWriter, r *http.Request) {
 	w.Write(data.([]byte))
 }
 
-// --- Client Handlers ---
+// FIXED: Paginated Sync Handler
+func handleSyncLedger(w http.ResponseWriter, r *http.Request) {
+	// 1. Security Check
+	if r.Header.Get("X-Fed-Key") != os.Getenv("FEDERATION_KEY") {
+		http.Error(w, "Unauthorized", 401)
+		return
+	}
 
-// V3.1: Homestead Start (Colony + Scout ONLY)
+	// 2. Pagination Logic (Using strconv)
+	// Defaults: since_day=0, limit=50
+	sinceDay, _ := strconv.Atoi(r.URL.Query().Get("since_day"))
+	
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit <= 0 { limit = 50 }
+	if limit > 100 { limit = 100 } // RAM Safety Cap
+
+	// 3. Query with Limit
+	rows, err := db.Query(`SELECT day_id, state_blob, final_hash 
+	                       FROM daily_snapshots 
+	                       WHERE day_id > ? 
+	                       ORDER BY day_id ASC 
+	                       LIMIT ?`, sinceDay, limit)
+	if err != nil {
+		http.Error(w, "DB Error", 500)
+		return
+	}
+	defer rows.Close()
+
+	// 4. Strict Type Definition
+	type SnapshotItem struct {
+		DayID     int    `json:"day_id"`
+		Blob      []byte `json:"blob"`
+		FinalHash string `json:"hash"`
+	}
+
+	var history []SnapshotItem
+
+	for rows.Next() {
+		var h SnapshotItem
+		// Scan directly into the temp variable
+		if err := rows.Scan(&h.DayID, &h.Blob, &h.FinalHash); err != nil {
+			continue
+		}
+		history = append(history, h)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(history)
+}
+
+// --- Client Handlers (Unchanged) ---
+
 func handleRegister(w http.ResponseWriter, r *http.Request) {
 	var req struct{ Username, Password string }
 	json.NewDecoder(r.Body).Decode(&req)
@@ -107,7 +156,6 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	found := false
 	
 	rand.Seed(time.Now().UnixNano())
-	// Goldilocks Loop
 	for i := 0; i < 50; i++ {
 		tempID := rand.Intn(1000000)
 		foodEff := GetEfficiency(tempID, "food")
@@ -123,16 +171,13 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 		sysUUID = fmt.Sprintf("sys-%s-fallback", "user")
 	}
 
-	// 1. Create System
 	db.Exec("INSERT INTO solar_systems (id, x, y, z, star_type, owner_uuid) VALUES (?,?,?,?, 'G2V', ?)", 
 		sysUUID, rand.Intn(100), rand.Intn(100), rand.Intn(100), ServerUUID)
 
-	// 2. Create Colony (Homestead)
 	bJson, _ := json.Marshal(map[string]int{"farm": 5, "well": 5, "urban_housing": 10})
 	db.Exec(`INSERT INTO colonies (system_id, owner_uuid, name, buildings_json, pop_laborers, water, food, iron) 
 	         VALUES (?, ?, ?, ?, 1000, 5000, 5000, 500)`, sysUUID, req.Username, req.Username+"'s Prime", string(bJson))
 
-	// 3. Create Scout Fleet (Vision Only, No Ark)
 	db.Exec(`INSERT INTO fleets (owner_uuid, status, fuel, origin_system, dest_system, ark_ship, fighters) 
 			 VALUES (?, 'ORBIT', 1000, ?, ?, 0, 1)`, req.Username, sysUUID, sysUUID)
 
@@ -144,11 +189,10 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// V3.1: Construct Unit (The Expansion Gate)
 func handleConstruct(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ColonyID int    `json:"colony_id"`
-		Unit     string `json:"unit"` // "ark_ship"
+		Unit     string `json:"unit"`
 		Amount   int    `json:"amount"`
 	}
 	json.NewDecoder(r.Body).Decode(&req)
@@ -165,7 +209,6 @@ func handleConstruct(w http.ResponseWriter, r *http.Request) {
 
 	var c Colony
 	var bJson string
-	// Fetch resources matching new schema
 	err := db.QueryRow("SELECT buildings_json, system_id, owner_uuid, iron, food, fuel, pop_laborers FROM colonies WHERE id=?", req.ColonyID).Scan(&bJson, &c.SystemID, &c.OwnerUUID, &c.Iron, &c.Food, &c.Fuel, &c.PopLaborers)
 	
 	if err == nil {
@@ -263,7 +306,6 @@ func handleDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// FIXED: Ownership Check (Unowned Planet)
 	var colonyCount int
 	db.QueryRow("SELECT count(*) FROM colonies WHERE system_id=?", sysID).Scan(&colonyCount)
 	if colonyCount > 0 {
@@ -309,53 +351,4 @@ func handleFleetLaunch(w http.ResponseWriter, r *http.Request) {
 }
 func handleState(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("{}"))
-}
-// Replace the "Sync Stub"
-func handleSyncLedger(w http.ResponseWriter, r *http.Request) {
-	// 1. Security Check
-	if r.Header.Get("X-Fed-Key") != os.Getenv("FEDERATION_KEY") {
-		http.Error(w, "Unauthorized", 401)
-		return
-	}
-
-	// 2. Pagination Logic
-	// "since_day": The ID of the last day the client already has (default 0)
-	sinceDay, _ := strconv.Atoi(r.URL.Query().Get("since_day"))
-
-	// "limit": How many days to fetch at once (default 50, max 100)
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	if limit <= 0 { limit = 50 }
-	if limit > 100 { limit = 100 } // Safety Cap for Pi RAM
-
-	// 3. Query with Constraints
-	rows, err := db.Query(`SELECT day_id, state_blob, final_hash
-	                       FROM daily_snapshots
-	                       WHERE day_id > ?
-	                       ORDER BY day_id ASC
-	                       LIMIT ?`, sinceDay, limit)
-	if err != nil {
-		http.Error(w, "DB Error", 500)
-		return
-	}
-	defer rows.Close()
-
-	// 4. Struct Definition (Same as before)
-	type SnapshotItem struct {
-		DayID     int    `json:"day_id"`
-		Blob      []byte `json:"blob"`
-		FinalHash string `json:"hash"`
-	}
-
-	var history []SnapshotItem
-
-	for rows.Next() {
-		var h SnapshotItem
-		if err := rows.Scan(&h.DayID, &h.Blob, &h.FinalHash); err != nil {
-			continue
-		}
-		history = append(history, h)
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(history)
 }
