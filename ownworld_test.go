@@ -15,7 +15,7 @@ import (
 func setupTestEnv(t *testing.T) {
 	var err error
 	// Use :memory: to avoid touching the real database on disk
-	db, err = sql.Open("sqlite3", ":memory:")
+	db, err = sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("Failed to open test database: %v", err)
 	}

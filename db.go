@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"lukechampine.com/blake3"
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite" // Changed for portability and scalability
 )
 
 // --- Core Database & Identity ---
@@ -19,7 +19,7 @@ func initDB() {
 	
 	// 1. Enable WAL Mode (Non-blocking reads) + 5s Timeout
 	var err error
-	db, err = sql.Open("sqlite3", dbFile+"?_journal_mode=WAL&_busy_timeout=5000")
+	db, err = sql.Open("sqlite", dbFile+"?_journal_mode=WAL&_busy_timeout=5000")
 	if err != nil { panic(err) }
 
 	// Force WAL

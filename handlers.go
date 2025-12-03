@@ -7,6 +7,8 @@ import (
 	"math/rand"
 	"net/http"
 	"time"
+	"os"  
+	"strconv"
 )
 
 // --- Federation Handlers ---
@@ -308,6 +310,52 @@ func handleFleetLaunch(w http.ResponseWriter, r *http.Request) {
 func handleState(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("{}"))
 }
+// Replace the "Sync Stub"
 func handleSyncLedger(w http.ResponseWriter, r *http.Request) {
-	w.Write([]byte("Sync Stub"))
+	// 1. Security Check
+	if r.Header.Get("X-Fed-Key") != os.Getenv("FEDERATION_KEY") {
+		http.Error(w, "Unauthorized", 401)
+		return
+	}
+
+	// 2. Pagination Logic
+	// "since_day": The ID of the last day the client already has (default 0)
+	sinceDay, _ := strconv.Atoi(r.URL.Query().Get("since_day"))
+
+	// "limit": How many days to fetch at once (default 50, max 100)
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit <= 0 { limit = 50 }
+	if limit > 100 { limit = 100 } // Safety Cap for Pi RAM
+
+	// 3. Query with Constraints
+	rows, err := db.Query(`SELECT day_id, state_blob, final_hash
+	                       FROM daily_snapshots
+	                       WHERE day_id > ?
+	                       ORDER BY day_id ASC
+	                       LIMIT ?`, sinceDay, limit)
+	if err != nil {
+		http.Error(w, "DB Error", 500)
+		return
+	}
+	defer rows.Close()
+
+	// 4. Struct Definition (Same as before)
+	type SnapshotItem struct {
+		DayID     int    `json:"day_id"`
+		Blob      []byte `json:"blob"`
+		FinalHash string `json:"hash"`
+	}
+
+	var history []SnapshotItem
+
+	for rows.Next() {
+		var h SnapshotItem
+		if err := rows.Scan(&h.DayID, &h.Blob, &h.FinalHash); err != nil {
+			continue
+		}
+		history = append(history, h)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(history)
 }

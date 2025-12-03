@@ -20,30 +20,45 @@ func GetEfficiency(planetID int, resource string) float64 {
 }
 
 // Phase 2.1: Snapshot with Compression
+// In snapshotWorld()
 func snapshotWorld() {
-	rows, err := db.Query(`SELECT id, buildings_json, pop_laborers, pop_specialists, pop_elites, iron, carbon, water, gold, vegetation, oxygen FROM colonies`)
-	if err != nil {
-		ErrorLog.Printf("Snapshot Query Error: %v", err)
-		return
-	}
-	defer rows.Close()
+    // --- PART 1: KEEP THIS EXISTING CODE ---
+    rows, err := db.Query(`SELECT id, buildings_json, pop_laborers, pop_specialists, pop_elites, iron, carbon, water, gold, vegetation, oxygen FROM colonies`)
+    if err != nil {
+        ErrorLog.Printf("Snapshot Query Error: %v", err)
+        return
+    }
+    defer rows.Close()
 
-	var colonies []Colony
-	for rows.Next() {
-		var c Colony
-		var bJson string
-		rows.Scan(&c.ID, &bJson, &c.PopLaborers, &c.PopSpecialists, &c.PopElites, &c.Iron, &c.Carbon, &c.Water, &c.Gold, &c.Vegetation, &c.Oxygen)
-		json.Unmarshal([]byte(bJson), &c.Buildings)
-		colonies = append(colonies, c)
-	}
+    var colonies []Colony
+    for rows.Next() {
+        var c Colony
+        var bJson string
+        rows.Scan(&c.ID, &bJson, &c.PopLaborers, &c.PopSpecialists, &c.PopElites, &c.Iron, &c.Carbon, &c.Water, &c.Gold, &c.Vegetation, &c.Oxygen)
+        json.Unmarshal([]byte(bJson), &c.Buildings)
+        colonies = append(colonies, c)
+    }
 
-	rawJSON, _ := json.Marshal(colonies)
-	compressed := compressLZ4(rawJSON) 
-	hash := hashBLAKE3(compressed)     
+    // --- PART 2: UPDATE THIS SECTION (The Fix) ---
+    // Now 'colonies' is defined and populated
+    rawJSON, _ := json.Marshal(colonies)
+    compressed := compressLZ4(rawJSON)
 
-	dayID := CurrentTick / 100
-	db.Exec("INSERT OR REPLACE INTO daily_snapshots (day_id, state_blob, final_hash) VALUES (?, ?, ?)", 
-		dayID, compressed, hash)
+    // Hash Chain Logic: Previous Hash + Current Data
+    payload := append([]byte(PreviousHash), compressed...)
+    currentHash := hashBLAKE3(payload)
+
+    dayID := CurrentTick / 100
+
+    // Save to DB
+    _, err = db.Exec("INSERT OR REPLACE INTO daily_snapshots (day_id, state_blob, final_hash) VALUES (?, ?, ?)",
+        dayID, compressed, currentHash)
+
+    // Update In-Memory State
+    if err == nil {
+        PreviousHash = currentHash
+        InfoLog.Printf("Snapshot Day %d. Hash: %s", dayID, currentHash)
+    }
 }
 
 // Phase 5.3: Advanced Pop & Stability
