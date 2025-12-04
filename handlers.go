@@ -14,9 +14,6 @@ import (
 	"strconv"
 	"sync/atomic"
 	"time"
-
-	pb "ownworld/pkg/federation"
-	"google.golang.org/protobuf/proto"
 )
 
 // --- Federation Handlers ---
@@ -42,7 +39,8 @@ func processImmigration() {
 		}
 
 		InfoLog.Printf("IMMIGRATION: Peer %s joined.", req.UUID)
-
+		
+		// Parse their public key
 		pubKeyBytes, err := hex.DecodeString(req.PublicKey)
 		if err != nil || len(pubKeyBytes) != ed25519.PublicKeySize {
 			continue
@@ -69,15 +67,12 @@ func handleHandshake(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	decompressed := decompressLZ4(body)
 	var req HandshakeRequest
-	if err := json.Unmarshal(decompressed, &req); err != nil {
-		http.Error(w, "Bad Request", 400)
-		return
-	}
+	json.Unmarshal(decompressed, &req)
 	
 	resp := HandshakeResponse{
 		Status:   "Queued",
 		UUID:     ServerUUID,
-		Location: ServerLoc, // defined in globals.go
+		Location: ServerLoc,
 	}
 
 	select {
@@ -86,24 +81,18 @@ func handleHandshake(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(resp)
 	default:
-		http.Error(w, "Queue Full", 503)
+		http.Error(w, "Full", 503)
 	}
 }
 
 func handleFederationTransaction(w http.ResponseWriter, r *http.Request) {
-	if r.Header.Get("Content-Type") != "application/x-protobuf" {
-		http.Error(w, "Protobuf Required", 415)
-		return
-	}
-
-	senderUUID := r.Header.Get("X-Server-UUID")
-	if senderUUID == "" {
-		http.Error(w, "Missing UUID Header", 401)
-		return
-	}
+	body, _ := io.ReadAll(r.Body)
+	decompressed := decompressLZ4(body)
+	var req TransactionRequest
+	json.Unmarshal(decompressed, &req)
 
 	peerLock.RLock()
-	peer, known := Peers[senderUUID]
+	peer, known := Peers[req.UUID]
 	peerLock.RUnlock()
 
 	if !known {
@@ -111,74 +100,64 @@ func handleFederationTransaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, _ := io.ReadAll(r.Body)
-	decompressed := decompressLZ4(body)
-
-	var packet pb.Packet
-	if err := proto.Unmarshal(decompressed, &packet); err != nil {
-		ErrorLog.Printf("Proto Error: %v", err)
-		http.Error(w, "Invalid Proto", 400)
-		return
-	}
-
-	var isValidSig bool
-
-	switch msg := packet.Content.(type) {
-	case *pb.Packet_Heartbeat:
-		signedMsg := fmt.Sprintf("%s:%d", packet.SenderUuid, msg.Heartbeat.Tick)
-		isValidSig = VerifySignature(peer.PublicKey, []byte(signedMsg), packet.Signature)
-
-		if isValidSig {
-			peerLock.Lock()
-			if p, ok := Peers[packet.SenderUuid]; ok {
-				p.LastTick = msg.Heartbeat.Tick
-				p.PeerCount = int(msg.Heartbeat.PeerCount)
-				p.LastSeen = time.Now()
-			}
-			peerLock.Unlock()
-			
-			if packet.SenderUuid == LeaderUUID {
-				syncClock(msg.Heartbeat.Tick)
-			}
-		}
-
-	case *pb.Packet_FleetMove:
-		isValidSig = VerifySignature(peer.PublicKey, msg.FleetMove.CompressedFleetData, packet.Signature)
-
-		if isValidSig {
-			InfoLog.Printf("Fleet Arrived from %s", packet.SenderUuid)
-			var f Fleet
-			if err := json.Unmarshal(msg.FleetMove.CompressedFleetData, &f); err == nil {
-				db.Exec(`INSERT INTO fleets (owner_uuid, status, origin_system, dest_system, 
-				         ark_ship, fighters, frigates, haulers, fuel) 
-				         VALUES (?, 'ORBIT', ?, ?, ?, ?, ?, ?, ?)`,
-					f.OwnerUUID, msg.FleetMove.OriginSystem, msg.FleetMove.DestSystem,
-					f.ArkShip, f.Fighters, f.Frigates, f.Haulers, f.Fuel)
-			}
-		}
-
-	case *pb.Packet_MarketOrder:
-		orderMsg := fmt.Sprintf("ORDER:%s:%s:%d:%d",
-			msg.MarketOrder.OrderId, msg.MarketOrder.Item,
-			msg.MarketOrder.Price, msg.MarketOrder.Quantity)
-
-		isValidSig = VerifySignature(peer.PublicKey, []byte(orderMsg), packet.Signature)
-
-		if isValidSig {
-			db.Exec(`INSERT OR REPLACE INTO market_orders (id, seller_uuid, item, price, qty) 
-			         VALUES (?, ?, ?, ?, ?)`,
-				msg.MarketOrder.OrderId, msg.MarketOrder.SellerUuid,
-				msg.MarketOrder.Item, msg.MarketOrder.Price, msg.MarketOrder.Quantity)
-		}
-	}
-
-	if !isValidSig {
-		ErrorLog.Printf("🚨 Invalid Signature from %s", packet.SenderUuid)
+	if !VerifySignature(peer.PublicKey, req.Payload, req.Signature) {
 		http.Error(w, "Invalid Signature", 401)
 		return
 	}
 
+	stateLock.Lock()
+	tickDiff := req.Tick - atomic.LoadInt64(&CurrentTick)
+	stateLock.Unlock()
+
+	if tickDiff < -2 {
+		http.Error(w, "Transaction Expired", 408)
+		return
+	}
 	w.Write([]byte("ACK"))
+}
+
+func handleHeartbeat(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
+	decompressed := decompressLZ4(body)
+
+	var req HeartbeatRequest
+	if err := json.Unmarshal(decompressed, &req); err != nil {
+		http.Error(w, "Bad Payload", 400)
+		return
+	}
+
+	peerLock.RLock()
+	peer, known := Peers[req.UUID]
+	peerLock.RUnlock()
+
+	if !known {
+		return
+	}
+
+	if mrand.Float32() < 0.10 {
+		msg := fmt.Sprintf("%s:%d", req.UUID, req.Tick)
+		sigBytes, _ := hex.DecodeString(req.Signature)
+		if !VerifySignature(peer.PublicKey, []byte(msg), sigBytes) {
+			InfoLog.Printf("🚨 BAD SIG from %s. Ignored.", req.UUID)
+			return
+		}
+	}
+
+	peerLock.Lock()
+	if p, ok := Peers[req.UUID]; ok {
+		p.LastSeen = time.Now()
+		p.LastTick = req.Tick
+		p.PeerCount = req.PeerCount
+	}
+	peerLock.Unlock()
+
+	if req.UUID == LeaderUUID {
+		syncClock(req.Tick)
+	} else {
+		recalculateLeader()
+	}
+
+	w.Write([]byte("OK"))
 }
 
 func handleMap(w http.ResponseWriter, r *http.Request) {
@@ -188,7 +167,6 @@ func handleMap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "public, max-age=60")
 	w.Write(data.([]byte))
 }
 
@@ -200,8 +178,12 @@ func handleSyncLedger(w http.ResponseWriter, r *http.Request) {
 
 	sinceDay, _ := strconv.Atoi(r.URL.Query().Get("since_day"))
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	if limit <= 0 { limit = 50 }
-	if limit > 100 { limit = 100 }
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 100 {
+		limit = 100
+	}
 
 	rows, err := db.Query(`SELECT day_id, state_blob, final_hash 
 	                       FROM daily_snapshots 
@@ -237,10 +219,7 @@ func handleSyncLedger(w http.ResponseWriter, r *http.Request) {
 
 func handleRegister(w http.ResponseWriter, r *http.Request) {
 	var req struct{ Username, Password string }
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Bad JSON", 400)
-		return
-	}
+	json.NewDecoder(r.Body).Decode(&req)
 
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	userUUID := hashBLAKE3(pub)
@@ -252,7 +231,7 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	                   VALUES (?, ?, ?, 1, ?, ?)`, userUUID, req.Username, passHash, pubHex, privEnc)
 
 	if err != nil {
-		http.Error(w, "Username Taken", 400)
+		http.Error(w, "Taken", 400)
 		return
 	}
 
@@ -262,17 +241,17 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	
 	var sysX, sysY, sysZ int
 
-	// Goldilocks Search with Cluster Spawning
 	for i := 0; i < 50; i++ {
 		uuidBytes, _ := hex.DecodeString(userUUID)
-		offsetX := mrand.Intn(40) - 20
-		offsetY := mrand.Intn(40) - 20
-		offsetZ := mrand.Intn(40) - 20
+		// Using user UUID for deterministic offset
+		// We use modulo safely to map bytes to range
+		offX := int(uuidBytes[0]%40) - 20
+		offY := int(uuidBytes[1]%40) - 20
+		offZ := int(uuidBytes[2]%40) - 20
 
-		// ServerLoc is defined in globals.go
-		sysX = ServerLoc[0] + offsetX
-		sysY = ServerLoc[1] + offsetY
-		sysZ = ServerLoc[2] + offsetZ
+		sysX = ServerLoc[0] + offX
+		sysY = ServerLoc[1] + offY
+		sysZ = ServerLoc[2] + offZ
 		
 		tempID := (sysX * 10000) + (sysY * 100) + sysZ
 		if tempID < 0 { tempID = -tempID }
@@ -295,7 +274,6 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	db.Exec(`INSERT INTO colonies (system_id, owner_uuid, name, pop_laborers, food, iron, buildings_json) 
 	         VALUES (?, ?, ?, 100, 2000, 1000, ?)`, sysID, userUUID, req.Username+" Prime", startBuilds)
 
-	// Ark Ship Spawn (Corrected to include Haulers if needed, but Ark is special)
 	db.Exec(`INSERT INTO fleets (owner_uuid, status, origin_system, ark_ship, fuel) 
 			 VALUES (?, 'ORBIT', ?, 1, 2000)`, userUUID, sysID)
 
@@ -362,25 +340,30 @@ func handleBankBurn(w http.ResponseWriter, r *http.Request) {
 		UserID   int    `json:"user_id"`
 	}
 	json.NewDecoder(r.Body).Decode(&req)
-	
+
 	eff := GetEfficiency(req.ColonyID, req.Item)
-	if eff < 0.1 { eff = 0.1 } 
-	
+	if eff < 0.1 {
+		eff = 0.1
+	}
+
 	multiplier := 1.0 / eff
 	basePrice := 1.0
 	payout := int(float64(req.Amount) * basePrice * multiplier)
 
+	stateLock.Lock() // Use stateLock for write safety
 	tx, _ := db.Begin()
 	res, _ := tx.Exec(fmt.Sprintf("UPDATE colonies SET %s = %s - ? WHERE id=? AND %s >= ?", req.Item, req.Item, req.Item), req.Amount, req.ColonyID, req.Amount)
 	if n, _ := res.RowsAffected(); n == 0 {
 		tx.Rollback()
+		stateLock.Unlock()
 		http.Error(w, "Insufficient Funds", 400)
 		return
 	}
 	tx.Exec("UPDATE users SET credits = credits + ? WHERE id=?", payout, req.UserID)
 	tx.Commit()
+	stateLock.Unlock()
 
-	w.Write([]byte(fmt.Sprintf("Burned %d for %d credits (Rate: %.2f)", req.Amount, payout, multiplier)))
+	w.Write([]byte(fmt.Sprintf("Burned %d for %d credits", req.Amount, payout)))
 }
 
 func handleConstruct(w http.ResponseWriter, r *http.Request) {
@@ -390,45 +373,54 @@ func handleConstruct(w http.ResponseWriter, r *http.Request) {
 		Amount   int    `json:"amount"`
 	}
 	json.NewDecoder(r.Body).Decode(&req)
-	if req.Amount < 1 { req.Amount = 1 }
+	if req.Amount < 1 {
+		req.Amount = 1
+	}
 
 	costs, ok := UnitCosts[req.Unit]
-	if !ok { http.Error(w, "Unknown Unit", 400); return }
+	if !ok {
+		http.Error(w, "Unknown Unit", 400)
+		return
+	}
 
 	stateLock.Lock()
 	defer stateLock.Unlock()
 
 	var c Colony
 	var bJson string
-	err := db.QueryRow(`SELECT buildings_json, system_id, owner_uuid, iron, food, fuel, carbon, gold, pop_laborers 
-	                    FROM colonies WHERE id=?`, req.ColonyID).
-	                    Scan(&bJson, &c.SystemID, &c.OwnerUUID, &c.Iron, &c.Food, &c.Fuel, &c.Carbon, &c.Gold, &c.PopLaborers)
+	err := db.QueryRow("SELECT buildings_json, system_id, owner_uuid, iron, food, fuel, pop_laborers FROM colonies WHERE id=?", req.ColonyID).Scan(&bJson, &c.SystemID, &c.OwnerUUID, &c.Iron, &c.Food, &c.Fuel, &c.PopLaborers)
 
-	if err != nil { http.Error(w, "Colony Not Found", 404); return }
-	
-	json.Unmarshal([]byte(bJson), &c.Buildings)
+	if err == nil {
+		c.Buildings = make(map[string]int)
+		json.Unmarshal([]byte(bJson), &c.Buildings)
+	} else {
+		http.Error(w, "Colony Not Found", 404)
+		return
+	}
+
 	if c.Buildings["shipyard"] < 1 {
-		http.Error(w, "Shipyard Required", 400); return
+		http.Error(w, "Shipyard Required", 400)
+		return
 	}
 
-	if c.Iron < costs["iron"]*req.Amount || 
-	   c.Food < costs["food"]*req.Amount || 
-	   c.Fuel < costs["fuel"]*req.Amount || 
-	   c.Carbon < costs["carbon"]*req.Amount ||
-	   c.Gold < costs["gold"]*req.Amount ||
-	   c.PopLaborers < costs["pop_laborers"]*req.Amount {
-		http.Error(w, "Insufficient Resources", 402); return
+	neededIron := costs["iron"] * req.Amount
+	neededFood := costs["food"] * req.Amount
+	neededFuel := costs["fuel"] * req.Amount
+	neededCrew := costs["pop_laborers"] * req.Amount
+
+	if c.Iron < neededIron || c.Food < neededFood || c.Fuel < neededFuel || c.PopLaborers < neededCrew {
+		http.Error(w, "Insufficient Resources/Crew", 402)
+		return
 	}
 
-	db.Exec(`UPDATE colonies SET iron=iron-?, food=food-?, fuel=fuel-?, carbon=carbon-?, gold=gold-?, pop_laborers=pop_laborers-? WHERE id=?`,
-		costs["iron"]*req.Amount, costs["food"]*req.Amount, costs["fuel"]*req.Amount, 
-		costs["carbon"]*req.Amount, costs["gold"]*req.Amount, costs["pop_laborers"]*req.Amount, 
-		req.ColonyID)
+	db.Exec("UPDATE colonies SET iron=iron-?, food=food-?, fuel=fuel-?, pop_laborers=pop_laborers-? WHERE id=?",
+		neededIron, neededFood, neededFuel, neededCrew, req.ColonyID)
 
 	arkCount := 0
-	if req.Unit == "ark_ship" { arkCount = req.Amount }
-	
-	// Only insert new fleet if not adding to existing (Simplified: Always new fleet for now)
+	if req.Unit == "ark_ship" {
+		arkCount = req.Amount
+	}
+
 	db.Exec(`INSERT INTO fleets (owner_uuid, status, fuel, origin_system, dest_system, ark_ship) 
 			 VALUES (?, 'ORBIT', ?, ?, ?, ?)`,
 		c.OwnerUUID, 1000, c.SystemID, c.SystemID, arkCount)
@@ -443,31 +435,44 @@ func handleBuild(w http.ResponseWriter, r *http.Request) {
 		Amount    int    `json:"amount"`
 	}
 	json.NewDecoder(r.Body).Decode(&req)
-	if req.Amount < 1 { req.Amount = 1 }
+	if req.Amount < 1 {
+		req.Amount = 1
+	}
 
 	cost, ok := BuildingCosts[req.Structure]
-	if !ok { http.Error(w, "Unknown Structure", 400); return }
+	if !ok {
+		http.Error(w, "Unknown Structure", 400)
+		return
+	}
 
 	stateLock.Lock()
 	defer stateLock.Unlock()
 
 	var c Colony
 	var bJson string
-	err := db.QueryRow("SELECT buildings_json, iron, carbon, gold FROM colonies WHERE id=?", req.ColonyID).Scan(&bJson, &c.Iron, &c.Carbon, &c.Gold)
-	if err != nil { http.Error(w, "Colony Not Found", 404); return }
+	err := db.QueryRow("SELECT buildings_json, iron, carbon FROM colonies WHERE id=?", req.ColonyID).Scan(&bJson, &c.Iron, &c.Carbon)
+	if err != nil {
+		http.Error(w, "Colony Not Found", 404)
+		return
+	}
 
-	if c.Iron < cost["iron"]*req.Amount || c.Carbon < cost["carbon"]*req.Amount || c.Gold < cost["gold"]*req.Amount {
-		http.Error(w, "Insufficient Resources", 402); return
+	neededIron := cost["iron"] * req.Amount
+	neededCarbon := cost["carbon"] * req.Amount
+
+	if c.Iron < neededIron || c.Carbon < neededCarbon {
+		http.Error(w, "Insufficient Resources", 402)
+		return
 	}
 
 	json.Unmarshal([]byte(bJson), &c.Buildings)
-	if c.Buildings == nil { c.Buildings = make(map[string]int) }
+	if c.Buildings == nil {
+		c.Buildings = make(map[string]int)
+	}
 	c.Buildings[req.Structure] += req.Amount
 	newBJson, _ := json.Marshal(c.Buildings)
 
-	db.Exec("UPDATE colonies SET iron=iron-?, carbon=carbon-?, gold=gold-?, buildings_json=? WHERE id=?",
-		cost["iron"]*req.Amount, cost["carbon"]*req.Amount, cost["gold"]*req.Amount, string(newBJson), req.ColonyID)
-
+	db.Exec("UPDATE colonies SET iron=iron-?, carbon=carbon-?, buildings_json=? WHERE id=?",
+		neededIron, neededCarbon, string(newBJson), req.ColonyID)
 	w.Write([]byte("Build Complete"))
 }
 

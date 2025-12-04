@@ -27,7 +27,7 @@ var (
 
 	// Identity
 	ServerUUID  string
-	ServerLoc   []int // [x, y, z] <--- ADDED THIS
+	ServerLoc   []int // [x, y, z]
 	GenesisHash string
 	PrivateKey  ed25519.PrivateKey
 	PublicKey   ed25519.PublicKey
@@ -55,6 +55,9 @@ var (
 	// Caches & Queues
 	mapSnapshot      atomic.Value 
 	immigrationQueue = make(chan HandshakeRequest, 50)
+	
+	// Locking (The missing piece)
+	stateLock sync.Mutex
 	
 	// Buffers
 	bufferPool = sync.Pool{
