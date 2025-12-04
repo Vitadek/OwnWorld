@@ -10,7 +10,7 @@ import (
 	"math"
 	mrand "math/rand"
 	"net/http"
-	"os" // <--- Added this required import
+	"os"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -86,6 +86,58 @@ func handleFederationTransaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Write([]byte("ACK"))
+}
+
+// This is the ONE AND ONLY handleHeartbeat
+func handleHeartbeat(w http.ResponseWriter, r *http.Request) {
+	// 1. Read & Decompress
+	body, _ := io.ReadAll(r.Body)
+	decompressed := decompressLZ4(body)
+
+	var req HeartbeatRequest
+	if err := json.Unmarshal(decompressed, &req); err != nil {
+		http.Error(w, "Bad Payload", 400)
+		return
+	}
+
+	// 2. Layer 2: Unknown Peer Check
+	peerLock.RLock()
+	peer, known := Peers[req.UUID]
+	peerLock.RUnlock()
+
+	if !known {
+		return
+	}
+
+	// 3. Layer 3: Probabilistic Verification (10% Chance)
+	// FIX: Use mrand (math/rand) instead of crypto/rand
+	if mrand.Float32() < 0.10 {
+		msg := fmt.Sprintf("%s:%d", req.UUID, req.Tick)
+		sigBytes, _ := hex.DecodeString(req.Signature)
+		
+		if !VerifySignature(peer.PublicKey, []byte(msg), sigBytes) {
+			InfoLog.Printf("🚨 BAD SIG from %s. Ignored.", req.UUID)
+			return
+		}
+	}
+
+	// 4. Update Peer State
+	peerLock.Lock()
+	if p, ok := Peers[req.UUID]; ok {
+		p.LastSeen = time.Now()
+		p.LastTick = req.Tick
+		p.PeerCount = req.PeerCount
+	}
+	peerLock.Unlock()
+
+	// 5. Sync Logic
+	if req.UUID == LeaderUUID {
+		syncClock(req.Tick)
+	} else {
+		recalculateLeader()
+	}
+
+	w.Write([]byte("OK"))
 }
 
 func handleMap(w http.ResponseWriter, r *http.Request) {
@@ -459,121 +511,4 @@ func handleState(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
-}
-func handleHeartbeat(w http.ResponseWriter, r *http.Request) {
-	// 1. Read & Decompress
-	body, _ := io.ReadAll(r.Body)
-	decompressed := decompressLZ4(body)
-
-	type HeartbeatWire struct {
-		UUID      string `json:"uuid"`
-		Tick      int64  `json:"tick"`
-		PeerCount int    `json:"peer_count"`
-		GenHash   string `json:"gen_hash"`
-		Signature string `json:"sig"`
-	}
-	var req HeartbeatWire
-	if err := json.Unmarshal(decompressed, &req); err != nil {
-		return // Silent fail to save CPU
-	}
-
-	// 2. "Layer Cake" Defense
-	peerLock.RLock()
-	peer, known := Peers[req.UUID]
-	peerLock.RUnlock()
-
-	if !known {
-		// Optional: If unknown, maybe trigger a handshake back?
-		// For now, ignore to prevent spam.
-		return
-	}
-
-	// 3. Probabilistic Verification (10% Chance)
-	// We trust established peers most of the time to save CPU.
-	if mrand.Float32() < 0.10 {
-		msg := fmt.Sprintf("%s:%d", req.UUID, req.Tick)
-		sigBytes, _ := hex.DecodeString(req.Signature)
-
-		if !VerifySignature(peer.PublicKey, []byte(msg), sigBytes) {
-			// SLASHING LOGIC: Ban them locally
-			InfoLog.Printf("🚨 BAD SIG from %s. Banning.", req.UUID)
-			// delete(Peers, req.UUID)
-			return
-		}
-	}
-
-	// 4. Update State
-	peerLock.Lock()
-	// Update existing pointer
-	if p, ok := Peers[req.UUID]; ok {
-		p.LastSeen = time.Now()
-		p.CurrentTick = req.Tick
-		p.PeerCount = req.PeerCount
-	}
-	peerLock.Unlock()
-
-	// 5. Check for Election Trigger
-	// If their score is higher than current leader, trigger a recount
-	// (This effectively syncs the network leadership)
-	// recalculateLeader() is cheap, we can run it.
-	// But better: Only run if *they* claim to be leader or have massive score?
-	// For simplicity, let the periodic recalculateLeader handle it,
-	// OR trigger it if we realize we are drifting.
-
-	w.Write([]byte("OK"))
-}
-func handleHeartbeat(w http.ResponseWriter, r *http.Request) {
-	// 1. Read & Decompress
-	body, _ := io.ReadAll(r.Body)
-	decompressed := decompressLZ4(body)
-
-	var req HeartbeatRequest
-	if err := json.Unmarshal(decompressed, &req); err != nil {
-		http.Error(w, "Bad Payload", 400)
-		return
-	}
-
-	// 2. Layer 2: Unknown Peer Check
-	peerLock.RLock()
-	peer, known := Peers[req.UUID]
-	peerLock.RUnlock()
-
-	if !known {
-		// Optional: Trigger a handshake back to them?
-		// For now, ignore to prevent spam/reflection attacks
-		return
-	}
-
-	// 3. Layer 3: Probabilistic Verification (10% Chance)
-	// We verify signatures only occasionally to save CPU
-	if rand.Float32() < 0.10 {
-		msg := fmt.Sprintf("%s:%d", req.UUID, req.Tick)
-		sigBytes, _ := hex.DecodeString(req.Signature)
-		
-		if !VerifySignature(peer.PublicKey, []byte(msg), sigBytes) {
-			InfoLog.Printf("🚨 BAD SIG from %s. Ignored.", req.UUID)
-			return
-		}
-	}
-
-	// 4. Update Peer State
-	peerLock.Lock()
-	if p, ok := Peers[req.UUID]; ok {
-		p.LastSeen = time.Now()
-		p.LastTick = req.Tick
-		p.PeerCount = req.PeerCount
-	}
-	peerLock.Unlock()
-
-	// 5. Sync Logic
-	// If this heartbeat is from our Leader, sync our clock
-	if req.UUID == LeaderUUID {
-		syncClock(req.Tick)
-	} else {
-		// If this peer has a higher score than our current leader, 
-		// trigger a recount to potentially depose the leader
-		recalculateLeader()
-	}
-
-	w.Write([]byte("OK"))
 }

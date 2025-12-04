@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"math"
 	"net/http"
 	"sort"
 	"sync"
@@ -157,22 +156,17 @@ func syncClock(leaderTick int64) {
 	if delta > 10 {
 		InfoLog.Printf("⚠️ Major Desync (Delta %d). Snapping to Tick %d", delta, leaderTick)
 		atomic.StoreInt64(&CurrentTick, leaderTick)
-		// In a real implementation, this is where you'd call /federation/sync
-		// to download the missing state snapshots.
 		return
 	}
 
 	// 2. SLEW (Micro-adjust speed)
-	// If we are behind (delta > 0), run faster (shorter duration)
-	// If we are ahead (delta < 0), run slower (longer duration)
-	
 	baseDuration := int64(5000)
 	adjustment := int64(0)
 
 	if delta > 0 {
-		adjustment = -50 // Run faster (4950ms)
+		adjustment = -50 // Run faster
 	} else if delta < 0 {
-		adjustment = 50  // Run slower (5050ms)
+		adjustment = 50  // Run slower
 	}
 
 	newDuration := baseDuration + adjustment
