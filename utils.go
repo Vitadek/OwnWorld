@@ -2,10 +2,15 @@ package main
 
 import (
 	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"io"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -17,7 +22,7 @@ import (
 	"lukechampine.com/blake3"
 )
 
-// NOTE: bufferPool is defined in globals.go
+// --- Logging & Compression ---
 
 func setupLogging() {
 	logDir := "./logs"
@@ -53,6 +58,8 @@ func decompressLZ4(src []byte) []byte {
 	return out
 }
 
+// --- Cryptography ---
+
 func hashBLAKE3(data []byte) string {
 	sum := blake3.Sum256(data)
 	return hex.EncodeToString(sum[:])
@@ -64,6 +71,26 @@ func SignMessage(privKey ed25519.PrivateKey, msg []byte) []byte {
 
 func VerifySignature(pubKey ed25519.PublicKey, msg, sig []byte) bool {
 	return ed25519.Verify(pubKey, msg, sig)
+}
+
+// EncryptKey secures the private key using the user's password
+func EncryptKey(key []byte, password string) string {
+	// 1. Hash password to get 32-byte AES key
+	passHash := sha256.Sum256([]byte(password))
+	
+	block, _ := aes.NewCipher(passHash[:])
+	gcm, _ := cipher.NewGCM(block)
+	nonce := make([]byte, gcm.NonceSize())
+	io.ReadFull(rand.Reader, nonce)
+	
+	ciphertext := gcm.Seal(nonce, nonce, key, nil)
+	return hex.EncodeToString(ciphertext)
+}
+
+// --- Physics & Math ---
+
+func CalculateDistance(x1, y1, z1, x2, y2, z2 int) float64 {
+	return math.Sqrt(math.Pow(float64(x2-x1), 2) + math.Pow(float64(y2-y1), 2) + math.Pow(float64(z2-z1), 2))
 }
 
 // --- Middleware & Security ---
@@ -97,6 +124,7 @@ func middlewareSecurity(next http.Handler) http.Handler {
 		contentType := r.Header.Get("Content-Type")
 
 		if contentType == "application/x-ownworld-fed" || contentType == "application/x-protobuf" {
+			// Handshake is public, everything else requires checks
 			if !strings.Contains(r.URL.Path, "handshake") {
 				senderUUID := r.Header.Get("X-Server-UUID")
 				peerLock.RLock()
@@ -128,7 +156,7 @@ func middlewareCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, X-User-ID, X-Server-UUID")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, X-User-ID, X-Server-UUID, X-Fed-Key")
 
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusOK)

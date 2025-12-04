@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	mrand "math/rand" // Aliased to avoid conflict with crypto/rand
+	mrand "math/rand" 
 	"net/http"
 	"os"
 	"strconv"
@@ -33,7 +33,17 @@ func processImmigration() {
 		db.QueryRow("SELECT value FROM system_meta WHERE key='genesis_hash'").Scan(&myGenHash)
 		if req.GenesisHash != myGenHash { continue }
 
-		InfoLog.Printf("IMMIGRATION: Peer %s joined.", req.UUID)
+		// LOGIC UPDATE: Actually add to peer map
+		peerLock.Lock()
+		peers[req.UUID] = &Peer{
+			UUID:      req.UUID,
+			Address:   req.Address,
+			LastSeen:  time.Now(),
+			// PublicKey: ... (In production, parse hex to ed25519.PublicKey)
+		}
+		peerLock.Unlock()
+
+		InfoLog.Printf("IMMIGRATION: Peer %s joined network.", req.UUID)
 		recalculateLeader()
 	}
 }
@@ -52,24 +62,14 @@ func handleHandshake(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// The New Dual-Mode Handler
 func handleFederationMessage(w http.ResponseWriter, r *http.Request) {
-    // 1. Check Content-Type for Protobuf
     if r.Header.Get("Content-Type") == "application/x-protobuf" {
-        // --- ROBOT PATH (Protobuf) ---
         body, _ := io.ReadAll(r.Body)
-        
-        // Decompress LZ4 (assuming middleware handled this or we do it here)
-        // For V3.1 strictness, let's assume raw body for now or decompress if needed
-        // rawProto := decompressLZ4(body) 
-        
         var packet pb.Packet
         if err := proto.Unmarshal(body, &packet); err != nil {
             http.Error(w, "Bad Proto", 400)
             return
         }
-
-        // Verify Signature logic would go here...
 
         switch inner := packet.Content.(type) {
         case *pb.Packet_Heartbeat:
@@ -80,12 +80,9 @@ func handleFederationMessage(w http.ResponseWriter, r *http.Request) {
         w.Write([]byte("ACK_PROTO"))
         return
     }
-
-    // --- HUMAN PATH (JSON Fallback) ---
     handleFederationTransaction(w, r)
 }
 
-// The Original JSON Handler (Fallback)
 func handleFederationTransaction(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	decompressed := decompressLZ4(body)
@@ -172,7 +169,14 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	var req struct{ Username, Password string }
 	json.NewDecoder(r.Body).Decode(&req)
 	
-	hash := hashBLAKE3([]byte(req.Password))
+    // 1. Generate Global Identity
+    pubKey, privKey, _ := ed25519.GenerateKey(rand.Reader)
+    userUUID := hashBLAKE3(pubKey) // This is the Global ID
+    pubKeyStr := hex.EncodeToString(pubKey)
+    passHash := hashBLAKE3([]byte(req.Password))
+    
+    // Encrypt Private Key so server can act on user's behalf later
+    privBlob := EncryptKey(privKey, req.Password)
 
 	var count int
 	db.QueryRow("SELECT count(*) FROM users WHERE username=?", req.Username).Scan(&count)
@@ -181,21 +185,15 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-    // 1. Generate Global Identity (The Fix)
-    pubKey, _, _ := ed25519.GenerateKey(rand.Reader)
-    userUUID := hashBLAKE3(pubKey)
-    pubKeyStr := hex.EncodeToString(pubKey)
-
-	res, _ := db.Exec(`INSERT INTO users (global_uuid, username, password_hash, is_local, ed25519_pubkey) 
-                       VALUES (?, ?, ?, 1, ?)`, userUUID, req.Username, hash, pubKeyStr)
+    // 2. Insert with Keys
+	res, _ := db.Exec(`INSERT INTO users (global_uuid, username, password_hash, is_local, ed25519_pubkey, ed25519_priv_enc) 
+                       VALUES (?, ?, ?, 1, ?, ?)`, userUUID, req.Username, passHash, pubKeyStr, privBlob)
 	uid, _ := res.LastInsertId()
 
-	// 2. Goldilocks Search
+	// 3. Goldilocks Search
 	var sysID string
 	found := false
 	mrand.Seed(time.Now().UnixNano())
-	
-	// Server "Location" anchor (0,0,0 for now)
 	serverX, serverY, serverZ := 0, 0, 0
 
 	for i := 0; i < 50; i++ {
@@ -204,8 +202,6 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 		z := serverZ + mrand.Intn(100) - 50
 		
 		tempID := fmt.Sprintf("sys-%d-%d-%d", x, y, z)
-		
-		// GetEfficiency is in simulation.go
 		if GetEfficiency(x*1000+y, "food") > 0.9 && GetEfficiency(x*1000+y, "iron") > 0.8 {
 			sysID = tempID
 			found = true
@@ -219,7 +215,7 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	db.Exec("INSERT OR IGNORE INTO solar_systems (id, x, y, z, star_type, owner_uuid) VALUES (?,?,?,?, 'G2V', ?)", 
 		sysID, mrand.Intn(100), mrand.Intn(100), mrand.Intn(100), ServerUUID)
 
-	// 3. Spawn Homestead + Ark
+	// 4. Spawn Homestead + Ark
 	startBuilds := `{"farm": 5, "well": 5, "urban_housing": 10}`
 	db.Exec(`INSERT INTO colonies (system_id, owner_uuid, name, pop_laborers, food, iron, buildings_json) 
 	         VALUES (?, ?, ?, 100, 5000, 1000, ?)`, sysID, userUUID, req.Username+" Prime", startBuilds)
@@ -394,10 +390,83 @@ func handleBankBurn(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleFleetLaunch(w http.ResponseWriter, r *http.Request) {
-	w.Write([]byte("Launch Stub"))
+    var req struct {
+        FleetID int    `json:"fleet_id"`
+        DestSys string `json:"dest_system"`
+    }
+    json.NewDecoder(r.Body).Decode(&req)
+
+    // 1. Get Fleet Info
+    var f Fleet
+    err := db.QueryRow("SELECT owner_uuid, origin_system, fuel FROM fleets WHERE id=?", req.FleetID).Scan(&f.OwnerUUID, &f.OriginSystem, &f.Fuel)
+    if err != nil {
+        http.Error(w, "Fleet Not Found", 404)
+        return
+    }
+
+    // 2. Resolve Coordinates
+    // (In Alpha, we query the solar_systems table. In Beta, we ask peers)
+    var x1, y1, z1 int
+    db.QueryRow("SELECT x, y, z FROM solar_systems WHERE id=?", f.OriginSystem).Scan(&x1, &y1, &z1)
+    
+    var x2, y2, z2 int
+    // If destination is unknown locally, assume generic far distance for now
+    err = db.QueryRow("SELECT x, y, z FROM solar_systems WHERE id=?", req.DestSys).Scan(&x2, &y2, &z2)
+    if err != nil {
+        x2, y2, z2 = x1+100, y1+100, z1+100 // Unknown jump
+    }
+
+    // 3. Calculate Physics
+    dist := CalculateDistance(x1, y1, z1, x2, y2, z2)
+    cost := int(dist * 10) // 10 Fuel per Lightyear
+
+    if f.Fuel < cost {
+        http.Error(w, fmt.Sprintf("Insufficient Fuel. Need %d", cost), 402)
+        return
+    }
+
+    // 4. Update State
+    arrival := CurrentTick + int(dist)
+    db.Exec(`UPDATE fleets SET status='TRANSIT', fuel=fuel-?, dest_system=?, departure_tick=?, arrival_tick=? 
+             WHERE id=?`, cost, req.DestSys, CurrentTick, arrival, req.FleetID)
+
+    w.Write([]byte(fmt.Sprintf("Fleet Launched. Arrival in %d ticks.", int(dist))))
 }
 
 func handleState(w http.ResponseWriter, r *http.Request) {
-	// Simple dump for now, secure in production
-	w.Write([]byte("{}"))
+    userID := r.Header.Get("X-User-ID")
+    if userID == "" {
+        w.Write([]byte("{}"))
+        return
+    }
+
+    // Determine UUID from ID (Internal mapping)
+    var userUUID string
+    db.QueryRow("SELECT global_uuid FROM users WHERE id=?", userID).Scan(&userUUID)
+
+    type Response struct {
+        MyColonies []Colony `json:"MyColonies"`
+        MyFleets   []Fleet  `json:"MyFleets"`
+    }
+    var resp Response
+
+    // Load Colonies
+    rows, _ := db.Query("SELECT id, name, pop_laborers, stability_current, iron, carbon, water, vegetation FROM colonies WHERE owner_uuid=?", userUUID)
+    for rows.Next() {
+        var c Colony
+        rows.Scan(&c.ID, &c.Name, &c.PopLaborers, &c.StabilityCurrent, &c.Iron, &c.Carbon, &c.Water, &c.Vegetation)
+        resp.MyColonies = append(resp.MyColonies, c)
+    }
+    rows.Close()
+
+    // Load Fleets
+    fRows, _ := db.Query("SELECT id, status, origin_system, dest_system, fuel FROM fleets WHERE owner_uuid=?", userUUID)
+    for fRows.Next() {
+        var f Fleet
+        fRows.Scan(&f.ID, &f.Status, &f.OriginSystem, &f.DestSystem, &f.Fuel)
+        resp.MyFleets = append(resp.MyFleets, f)
+    }
+    fRows.Close()
+
+    json.NewEncoder(w).Encode(resp)
 }

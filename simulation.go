@@ -64,12 +64,14 @@ func tickWorld() {
 
 	CurrentTick++
 
-	// Fetch Full Colony Data (V3 Schema)
+	// 1. Arrival Logic (Fleets)
+	db.Exec("UPDATE fleets SET status='ORBIT', origin_system=dest_system WHERE status='TRANSIT' AND arrival_tick <= ?", CurrentTick)
+
+	// 2. Colony Logic
 	rows, err := db.Query(`SELECT id, buildings_json, pop_laborers, pop_specialists, pop_elites, 
 	                       food, water, carbon, gold, fuel, stability_current, stability_target 
 	                       FROM colonies`)
 	if err != nil {
-		if CurrentTick % 10 == 0 { ErrorLog.Printf("Tick DB Error: %v", err) }
 		return
 	}
 	defer rows.Close()
@@ -89,14 +91,50 @@ func tickWorld() {
 			&c.Food, &c.Water, &c.Carbon, &c.Gold, &c.Fuel, &c.StabilityCurrent, &c.StabilityTarget)
 		json.Unmarshal([]byte(bJson), &c.Buildings)
 
-		// Simple Production
-		c.Food += c.Buildings["farm"] * 5
-		c.Water += c.Buildings["well"] * 5
+		// --- ECONOMY ENGINE v2 ---
+		
+		// 1. Consumption
+		// Laborers: 1 Food
+		// Specialists: 2 Food + 1 Carbon (Consumer Goods)
+		// Elites: 5 Food + 1 Gold (Luxury)
+		neededFood := (c.PopLaborers * 1) + (c.PopSpecialists * 2) + (c.PopElites * 5)
+		neededCarbon := c.PopSpecialists * 1
+		neededGold := c.PopElites * 1
+
+		// Apply Consumption
+		if c.Food >= neededFood { c.Food -= neededFood } else {
+			c.StabilityTarget -= 5.0
+			// Starvation Death (5%)
+			c.PopLaborers = int(float64(c.PopLaborers) * 0.95)
+		}
+
+		if c.Carbon >= neededCarbon { c.Carbon -= neededCarbon } else {
+			// Specialists downgrade to Laborers if unhappy
+			if c.PopSpecialists > 0 {
+				c.PopSpecialists--
+				c.PopLaborers++
+			}
+		}
+
+		if c.Gold >= neededGold { c.Gold -= neededGold } // Elites just complain (Stability hit)
+
+		// 2. Production
+		// Multipliers based on Class ratios
+		effLab := float64(c.PopLaborers) / 100.0
+		// effSpec := float64(c.PopSpecialists) / 10.0
+
+		// Basic Resources
+		c.Food += int(float64(c.Buildings["farm"] * 10) * effLab)
+		c.Water += int(float64(c.Buildings["well"] * 10) * effLab)
+		
+		// Mining (Depends on Planet Efficiency)
+		sysHash := c.ID // Simplified planet ID usage
+		c.Iron += int(float64(c.Buildings["iron_mine"] * 5) * effLab * GetEfficiency(sysHash, "iron"))
 		
 		// Stability Drift
 		diff := c.StabilityTarget - c.StabilityCurrent
-		c.StabilityCurrent += diff * 0.05
-		c.StabilityTarget = 100.0
+		c.StabilityCurrent += diff * 0.1
+		c.StabilityTarget = 100.0 // Reset baseline
 
 		updates = append(updates, ColUpdate{
 			ID: c.ID, Food: c.Food, Water: c.Water, Carbon: c.Carbon, Gold: c.Gold, Fuel: c.Fuel,
