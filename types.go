@@ -16,6 +16,7 @@ type Peer struct {
 	LastSeen    time.Time
 	Reputation  int
 	Relation    int // 0:Neutral, 1:Federated, 2:Hostile
+        Location    []int // [x, y, z]
 }
 
 type HandshakeRequest struct {
@@ -23,6 +24,12 @@ type HandshakeRequest struct {
 	GenesisHash string `json:"genesis_hash"`
 	PublicKey   string `json:"public_key"`
 	Address     string `json:"address"`
+        Location    []int  `json:"location"` // My Location
+}
+type HandshakeResponse struct {
+	Status   string `json:"status"`
+	UUID     string `json:"uuid"`
+	Location []int  `json:"location"` // Seed's Location
 }
 
 type TransactionRequest struct {
