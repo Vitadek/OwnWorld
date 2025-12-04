@@ -1,0 +1,37 @@
+services:
+  # The "Genesis" Node (Seed)
+  # This node initializes the galaxy identity.
+  seed-node:
+    build: .
+    image: ownworld:latest
+    container_name: ownworld-seed
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data/seed:/app/data
+    environment:
+      - FEDERATION_NAME=OfficialGalaxy
+      - OWNWORLD_COMMAND_CONTROL=true
+      - OWNWORLD_PEERING_MODE=promiscuous
+      # Empty SEED_NODES means it starts as a leader
+      - SEED_NODES=
+
+  # A Secondary Node (Player/Resource Node)
+  # This node connects to the seed to sync the timeline.
+  player-node:
+    build: .
+    image: ownworld:latest
+    container_name: ownworld-player
+    restart: unless-stopped
+    ports:
+      - "8081:8080"
+    volumes:
+      - ./data/player:/app/data
+    depends_on:
+      - seed-node
+    environment:
+      - FEDERATION_NAME=OfficialGalaxy
+      - OWNWORLD_COMMAND_CONTROL=true
+      # Connects to the seed container internally
+      - SEED_NODES=http://seed-node:8080

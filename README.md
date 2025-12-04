@@ -1,54 +1,86 @@
-# OwnWorld: A Self-Hosted Space-Based Simple Game Server
+OwnWorld Galaxy Engine
 
-OwnWorld is a **self-hosted, space-based simple game server** designed to be easily configurable and federated.
+OwnWorld is a distributed, federated MMO strategy game engine designed for high-concurrency simulations on low-power hardware (Raspberry Pi/ARM).
 
----
+It operates as a Layer 3 Application-Specific Blockchain, using event sourcing and cryptographic verification to maintain a shared galaxy state across thousands of independent servers.
+Key Features
 
-## Configuration
+    Federated Architecture: Every player runs their own server ("World"). Worlds connect via HTTP/2 to form a Galaxy.
 
-The server is configured primarily via **environment variables**. These can be set directly in your shell or within a `.env` file.
+    Event Sourcing: All game actions are stored in an immutable transaction_log. State is verifiable and replayable.
 
----
+    Scarcity Economy: Resource efficiency is procedurally generated based on BLAKE3 hashes of planet IDs. Players must trade to survive.
 
-## Federation
+    Optimized for ARM: Uses WAL Mode SQLite, LZ4 Compression, and TDMA Staggering to run 100+ worlds on a single Raspberry Pi 4.
 
-To participate in an existing game network, or **federation**, your server must be configured to connect to at least one running seed node.
+    Trustless Security: Fleet movements and trades are signed with Ed25519 keys.
 
-### Environment Variable
+Getting Started
+Prerequisites
 
-* **`SEED_NODES`**: A **comma-separated list** of seed node URLs.
-    * *Example:* `SEED_NODES="http://192.168.1.50:8080,http://ownworld.example.com"`
-    * *Default:* Empty (If left empty, the server starts as a **standalone/genesis node**).
+    Docker & Docker Compose
 
----
+    OR Go 1.22+ (for manual build)
 
-## Server Options
+Quick Start (Docker)
 
-These environment variables control specific server behavior:
+Spin up a local 2-node galaxy (1 Seed, 1 Peer):
 
-* **`OWNWORLD_DB_FILE`**: Path to the **SQLite database file**.
-    * *Default:* `./data/ownworld.db`
-* **`OWNWORLD_COMMAND_CONTROL`**: Controls user interaction APIs.
-    * Set to `true` (default) to enable user APIs (registration, building).
-    * Set to `false` for a resource-only node.
-* **`OWNWORLD_PEERING_MODE`**: Defines how the server accepts peer connections.
-    * `promiscuous` (**default**): Accepts connections from any valid peer.
-    * `strict`: Only accepts connections from peers in a whitelist (not yet fully implemented).
+docker-compose up --build -d
 
----
+    Seed Node: http://localhost:8080
 
-## Running
+    Player Node: http://localhost:8081
 
-### Standalone (Genesis Node)
+Manual Build
 
-Run the following command without setting `SEED_NODES`:
+# Install dependencies
+go mod tidy
 
-```bash
-go run .
-```
+# Build
+go build -o ownworld .
 
-## Joining a Federation
+# Run (Standalone)
+./ownworld
 
-```bash
-SEED_NODES="http://primary-node-ip:8080" go run .
-```
+Configuration
+
+Configure your node using Environment Variables:
+Variable	Default	Description
+FEDERATION_NAME	(Empty)	Name of the Galaxy. Nodes with matching names/hashes can peer.
+SEED_NODES	(Empty)	Comma-separated list of URLs to bootstrap from (e.g. http://seed.net:8080).
+OWNWORLD_COMMAND_CONTROL	true	If false, disables User APIs (/register, /login). Runs as a headless "Resource Node".
+OWNWORLD_PEERING_MODE	promiscuous	strict = Only accept peers in whitelist. promiscuous = Accept valid Genesis hashes.
+FEDERATION_KEY	(Empty)	Optional shared secret for admin sync endpoints.
+API Endpoints
+Client API (Human)
+
+    POST /api/register: Create a new account and spawn a Colony.
+
+    GET /api/state: Fetch your current colonies, fleets, and credits.
+
+    POST /api/fleet/launch: Send a fleet to another system.
+
+    POST /api/bank/burn: Exchange raw resources for Credits (Scarcity Pricing).
+
+Federation API (Robot)
+
+    POST /federation/handshake: Peer discovery and verification.
+
+    POST /federation/transaction: Protobuf endpoint for high-speed fleet/trade synchronization.
+
+    GET /federation/map: Lightweight, cached JSON map of the known galaxy.
+
+Architecture
+
+    Core: Go (Golang)
+
+    DB: SQLite (WAL Mode) + sync.Pool buffer reuse.
+
+    Crypto: BLAKE3 (Hashing), Ed25519 (Signatures), LZ4 (Compression).
+
+    Consensus: Weighted Election (Tick Height + Peer Count) with TDMA time-slot staggering.
+
+License
+
+MIT
