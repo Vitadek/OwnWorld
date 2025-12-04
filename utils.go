@@ -29,7 +29,9 @@ func compressLZ4(src []byte) []byte {
 	w := lz4.NewWriter(buf)
 	w.Write(src)
 	w.Close()
-	out := make([]byte, buf.Len()); copy(out, buf.Bytes()); return out
+	out := make([]byte, buf.Len())
+	copy(out, buf.Bytes())
+	return out
 }
 
 func decompressLZ4(src []byte) []byte {
@@ -38,42 +40,78 @@ func decompressLZ4(src []byte) []byte {
 	return out
 }
 
-func SignMessage(msg []byte) []byte {
-	return ed25519.Sign(PrivateKey, msg)
+func SignMessage(privKey ed25519.PrivateKey, msg []byte) []byte {
+	return ed25519.Sign(privKey, msg)
 }
 
-func VerifySignature(pub ed25519.PublicKey, msg, sig []byte) bool {
-	return ed25519.Verify(pub, msg, sig)
+func VerifySignature(pubKey ed25519.PublicKey, msg, sig []byte) bool {
+	return ed25519.Verify(pubKey, msg, sig)
 }
 
 
 func getLimiter(ip string) *rate.Limiter {
-	ipLock.Lock(); defer ipLock.Unlock()
-	if _, exists := ipLimiters[ip]; !exists {
-		ipLimiters[ip] = rate.NewLimiter(1, 5)
+	ipLock.Lock()
+	defer ipLock.Unlock()
+	limiter, exists := ipLimiters[ip]
+	if !exists {
+		limiter = rate.NewLimiter(1, 5)
+		ipLimiters[ip] = limiter
 	}
-	return ipLimiters[ip]
+	return limiter
 }
 
 func middlewareSecurity(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ip, _, _ := net.SplitHostPort(r.RemoteAddr)
-		if !getLimiter(ip).Allow() {
-			http.Error(w, "429 Too Many Requests", 429); return
+		if ip != "::1" && ip != "127.0.0.1" {
+			if !getLimiter(ip).Allow() {
+				http.Error(w, "Rate Limit Exceeded", 429)
+				return
+			}
 		}
 		next.ServeHTTP(w, r)
 	})
 }
+
 func setupLogging() {
-    // Ensure logs directory exists
-    if _, err := os.Stat("./logs"); os.IsNotExist(err) {
-        os.Mkdir("./logs", 0755)
-    }
-
-    // Open log files
-    logFile, _ := os.OpenFile("./logs/server.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
-
-    // Initialize Global Loggers
-    InfoLog = log.New(io.MultiWriter(os.Stdout, logFile), "INFO: ", log.Ldate|log.Ltime|log.Lshortfile)
-    ErrorLog = log.New(io.MultiWriter(os.Stderr, logFile), "ERROR: ", log.Ldate|log.Ltime|log.Lshortfile)
+	logDir := "./logs"
+	if _, err := os.Stat(logDir); os.IsNotExist(err) {
+		os.Mkdir(logDir, 0755)
+	}
+	fInfo, _ := os.OpenFile(filepath.Join(logDir, "server.log"), os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	fErr, _ := os.OpenFile(filepath.Join(logDir, "error.log"), os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	InfoLog = log.New(io.MultiWriter(os.Stdout, fInfo), "INFO: ", log.Ldate|log.Ltime|log.Lshortfile)
+	ErrorLog = log.New(io.MultiWriter(os.Stderr, fErr), "ERROR: ", log.Ldate|log.Ltime|log.Lshortfile)
+}
+func encryptKey(key ed25519.PrivateKey, password string) string {
+	// Hash password to get 32-byte key
+	passHash := blake3.Sum256([]byte(password))
+	block, _ := aes.NewCipher(passHash[:])
+	gcm, _ := cipher.NewGCM(block)
+	nonce := make([]byte, gcm.NonceSize())
+	io.ReadFull(rand.Reader, nonce)
+	ciphertext := gcm.Seal(nonce, nonce, key, nil)
+	return hex.EncodeToString(ciphertext)
+}
+func encryptKey(key ed25519.PrivateKey, password string) string {
+	// Hash password to get 32-byte key
+	passHash := blake3.Sum256([]byte(password))
+	block, _ := aes.NewCipher(passHash[:])
+	gcm, _ := cipher.NewGCM(block)
+	nonce := make([]byte, gcm.NonceSize())
+	io.ReadFull(rand.Reader, nonce)
+	ciphertext := gcm.Seal(nonce, nonce, key, nil)
+	return hex.EncodeToString(ciphertext)
+}
+func middlewareCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, X-User-ID, X-Server-UUID")
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }

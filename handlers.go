@@ -17,27 +17,91 @@ import (
 	// "google.golang.org/protobuf/proto"
 )
 
+func handleHandshake(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
+	decompressed := decompressLZ4(body)
+	var req HandshakeRequest
+	json.Unmarshal(decompressed, &req)
+	select {
+	case immigrationQueue <- req:
+		w.WriteHeader(http.StatusAccepted)
+		w.Write([]byte("Queued"))
+	default:
+		http.Error(w, "Full", 503)
+	}
+}
+
+func processImmigration() {
+	for req := range immigrationQueue {
+		time.Sleep(2 * time.Second)
+		if Config.PeeringMode == "strict" { continue }
+
+		peerLock.RLock()
+		_, exists := Peers[req.UUID]
+		peerLock.RUnlock()
+		if exists { continue }
+
+		var myGenHash string
+		db.QueryRow("SELECT value FROM system_meta WHERE key='genesis_hash'").Scan(&myGenHash)
+		if req.GenesisHash != myGenHash { continue }
+
+		InfoLog.Printf("IMMIGRATION: Peer %s joined.", req.UUID)
+		recalculateLeader()
+	}
+}
+
+func handleSyncLedger(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("X-Fed-Key") != os.Getenv("FEDERATION_KEY") {
+		http.Error(w, "Unauthorized", 401); return
+	}
+	// Simplified Sync Stub
+	w.Write([]byte("Sync OK"))
+}
+
+func handleMap(w http.ResponseWriter, r *http.Request) {
+	data := mapSnapshot.Load()
+	if data == nil {
+		w.Write([]byte("[]"))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(data.([]byte))
+}
+func handleFederationTransaction(w http.ResponseWriter, r *http.Request) {
+	// Stub for JSON fallback
+	w.Write([]byte("ACK"))
+}
+
 // --- Client Handlers ---
 
 func handleRegister(w http.ResponseWriter, r *http.Request) {
 	var req struct{ Username, Password string }
 	json.NewDecoder(r.Body).Decode(&req)
-	
-	// 1. Generate Identity
-	pub, _, _ := ed25519.GenerateKey(rand.Reader)
-	userUUID := hashBLAKE3(pub) 
+
+	// 1. Generate Global Identity (DO THE RIGHT THING)
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader) // Uses crypto/rand
+
+	userUUID := hashBLAKE3(pub)
 	pubHex := hex.EncodeToString(pub)
+
+	// Encrypt Private Key with Password so we can store it safely
+	privEnc := encryptKey(priv, req.Password)
+
 	passHash := hashBLAKE3([]byte(req.Password))
 
-	_, err := db.Exec(`INSERT INTO users (global_uuid, username, password_hash, is_local, ed25519_pubkey) 
-	                   VALUES (?, ?, ?, 1, ?)`, userUUID, req.Username, passHash, pubHex)
-	if err != nil { http.Error(w, "Taken", 400); return }
+	// 2. Insert User
+	res, err := db.Exec(`INSERT INTO users (global_uuid, username, password_hash, is_local, ed25519_pubkey, ed25519_priv_enc)
+	                     VALUES (?, ?, ?, 1, ?, ?)`,
+	                     userUUID, req.Username, passHash, pubHex, privEnc)
 
-	// 2. Goldilocks Search
+	if err != nil { http.Error(w, "Taken", 400); return }
+	uid, _ := res.LastInsertId()
+
+	// 3. Goldilocks Search
 	mrand.Seed(time.Now().UnixNano())
 	var sysID string
 	found := false
-	
+
 	for i := 0; i < 50; i++ {
 		id := mrand.Intn(1000000)
 		if GetEfficiency(id, "food") > 0.9 {
@@ -47,23 +111,27 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !found { sysID = "sys-fallback" }
-	
+
 	// Create System
 	db.Exec("INSERT OR IGNORE INTO solar_systems (id, owner_uuid) VALUES (?, ?)", sysID, ServerUUID)
 
-	// 3. Create Homestead (Colony)
-	// Gives them a base to produce food/iron
+	// 4. Spawn Homestead (Colony)
 	startBuilds := `{"farm": 5, "iron_mine": 5, "urban_housing": 10}`
-	db.Exec(`INSERT INTO colonies (system_id, owner_uuid, name, pop_laborers, food, iron, buildings_json) 
+	db.Exec(`INSERT INTO colonies (system_id, owner_uuid, name, pop_laborers, food, iron, buildings_json)
 	         VALUES (?, ?, ?, 100, 2000, 1000, ?)`, sysID, userUUID, req.Username+" Prime", startBuilds)
 
-	// 4. Create Ark Ship (Expansion Tool) - NOT FREE, but for Alpha/Testing maybe give one?
-	// User request: "Colony is supposed to start with the ark"
-	// Okay, we give one Ark Ship in Orbit to allow immediate expansion.
-	db.Exec(`INSERT INTO fleets (owner_uuid, status, origin_system, ark_ship, fuel) 
+	// 5. Spawn Ark Ship (Fleet)
+	// Status: ORBIT. Must deploy to create 2nd colony.
+	db.Exec(`INSERT INTO fleets (owner_uuid, status, origin_system, ark_ship, fuel)
 			 VALUES (?, 'ORBIT', ?, 1, 2000)`, userUUID, sysID)
 
-	json.NewEncoder(w).Encode(map[string]string{"uuid": userUUID, "system": sysID})
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status": "registered",
+		"user_id": uid,
+		"user_uuid": userUUID,
+		"system_id": sysID,
+		"message": "Identity Secured. Ark Ship Ready.",
+	})
 }
 
 func handleFleetLaunch(w http.ResponseWriter, r *http.Request) {
@@ -135,4 +203,42 @@ func handleFederationMessage(w http.ResponseWriter, r *http.Request) {
 	
 	// HUMAN PATH
 	w.Write([]byte("ACK_JSON"))
+}
+func handleConstruct(w http.ResponseWriter, r *http.Request) {
+	w.Write([]byte("Construct Stub"))
+}
+
+func handleBuild(w http.ResponseWriter, r *http.Request) {
+	w.Write([]byte("Build Stub"))
+}
+
+func handleDeploy(w http.ResponseWriter, r *http.Request) {
+	w.Write([]byte("Deploy Stub"))
+}
+
+func handleBankBurn(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ColonyID int    `json:"colony_id"`
+		Item     string `json:"item"`
+		Amount   int    `json:"amount"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+
+	eff := GetEfficiency(req.ColonyID, req.Item)
+	if eff < 0.1 { eff = 0.1 }
+
+	multiplier := 1.0 / eff
+	payout := int(float64(req.Amount) * 1.0 * multiplier) // Base Price 1.0
+
+	w.Write([]byte(fmt.Sprintf("Burned %d for %d credits", req.Amount, payout)))
+}
+
+func handleFleetLaunch(w http.ResponseWriter, r *http.Request) {
+	// Atomic load of current tick for calculation
+	arrivalTick := atomic.LoadInt64(&CurrentTick) + 100
+	w.Write([]byte(fmt.Sprintf("Fleet Launched. Arrival Tick: %d", arrivalTick)))
+}
+
+func handleState(w http.ResponseWriter, r *http.Request) {
+	w.Write([]byte("{}"))
 }
