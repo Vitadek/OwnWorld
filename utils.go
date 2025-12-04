@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings" // <--- Added this
 	"sync"
 
 	"github.com/pierrec/lz4/v4"
@@ -111,7 +112,6 @@ func middlewareSecurity(next http.Handler) http.Handler {
 		}
 
 		contentType := r.Header.Get("Content-Type")
-		// Simple check (contains) handles both strict and charset-appended types
 		if strings.Contains(contentType, "application/x-protobuf") {
 			next.ServeHTTP(w, r)
 			return

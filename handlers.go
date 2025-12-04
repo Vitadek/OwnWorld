@@ -7,30 +7,33 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	mrand "math/rand"
 	"net/http"
-	"os"
-	"strconv"
 	"sync/atomic"
 	"time"
 )
 
-// --- Federation ---
+// --- Federation Handlers ---
 
 func processImmigration() {
 	for req := range immigrationQueue {
 		time.Sleep(2 * time.Second)
-		if Config.PeeringMode == "strict" { continue }
+		if Config.PeeringMode == "strict" {
+			continue
+		}
 
 		peerLock.RLock()
 		_, exists := Peers[req.UUID]
 		peerLock.RUnlock()
-		if exists { continue }
+		if exists {
+			continue
+		}
 
 		var myGenHash string
 		db.QueryRow("SELECT value FROM system_meta WHERE key='genesis_hash'").Scan(&myGenHash)
-		if req.GenesisHash != myGenHash { continue }
+		if req.GenesisHash != myGenHash {
+			continue
+		}
 
 		InfoLog.Printf("IMMIGRATION: Peer %s joined.", req.UUID)
 		recalculateLeader()
@@ -93,11 +96,11 @@ func handleMap(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleSyncLedger(w http.ResponseWriter, r *http.Request) {
-	// Simplified sync
+	// Stub for now to fix import error
 	w.Write([]byte("Sync OK"))
 }
 
-// --- Client ---
+// --- Client Handlers ---
 
 func handleRegister(w http.ResponseWriter, r *http.Request) {
 	var req struct{ Username, Password string }
@@ -114,7 +117,6 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	
 	if err != nil { http.Error(w, "Taken", 400); return }
 	
-	// ID lookup for response
 	var uid int
 	db.QueryRow("SELECT id FROM users WHERE global_uuid=?", userUUID).Scan(&uid)
 
@@ -138,6 +140,7 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	db.Exec(`INSERT INTO colonies (system_id, owner_uuid, name, pop_laborers, food, iron, buildings_json) 
 	         VALUES (?, ?, ?, 100, 2000, 1000, ?)`, sysID, userUUID, req.Username+" Prime", startBuilds)
 
+	// Spawn Ark Ship
 	db.Exec(`INSERT INTO fleets (owner_uuid, status, origin_system, ark_ship, fuel) 
 			 VALUES (?, 'ORBIT', ?, 1, 2000)`, userUUID, sysID)
 
@@ -149,7 +152,6 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// FIXED: Real Physics Launch
 func handleFleetLaunch(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		FleetID      int    `json:"fleet_id"`
@@ -164,29 +166,26 @@ func handleFleetLaunch(w http.ResponseWriter, r *http.Request) {
 	if err != nil { http.Error(w, "Fleet Not Found", 404); return }
 	if f.Status != "ORBIT" { http.Error(w, "Fleet in transit", 400); return }
 
-	// 1. Physics Calc
+	// Physics
 	originCoords := GetSystemCoords(currentSys)
 	targetCoords := GetSystemCoords(req.TargetSystem)
 	
-	// Target Owner lookup for federation status
 	var targetOwner string
 	db.QueryRow("SELECT owner_uuid FROM solar_systems WHERE id=?", req.TargetSystem).Scan(&targetOwner)
 	
-	cost := CalculateFuelCost(originCoords, targetCoords, 1000, targetOwner) // 1000=Mass
+	cost := CalculateFuelCost(originCoords, targetCoords, 1000, targetOwner)
 	
 	if f.Fuel < cost {
 		http.Error(w, fmt.Sprintf("Insufficient Fuel. Need %d", cost), 402)
 		return
 	}
 
-	// 2. Distance Calc
 	dist := 0.0
 	for i := 0; i < 3; i++ { dist += math.Pow(float64(originCoords[i]-targetCoords[i]), 2) }
 	distance := math.Sqrt(dist)
 	
 	arrivalTick := atomic.LoadInt64(&CurrentTick) + int64(distance)
 
-	// 3. Launch
 	db.Exec(`UPDATE fleets SET status='TRANSIT', fuel=fuel-?, dest_system=?, 
 	         departure_tick=?, arrival_tick=? WHERE id=?`, 
 	         cost, req.TargetSystem, atomic.LoadInt64(&CurrentTick), arrivalTick, req.FleetID)
@@ -194,7 +193,6 @@ func handleFleetLaunch(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(fmt.Sprintf("Fleet Launched. Cost: %d. Arrival: %d", cost, arrivalTick)))
 }
 
-// FIXED: Returns real data
 func handleState(w http.ResponseWriter, r *http.Request) {
 	userUUID := r.Header.Get("X-User-UUID")
 	if userUUID == "" {
