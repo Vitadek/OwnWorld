@@ -33,8 +33,13 @@ func recalculateLeader() {
 	BestNode := candidates[0]
 	LeaderUUID = BestNode.UUID
 	IsLeader = (LeaderUUID == ServerUUID)
+}
 
-	// Phase 4.2: TDMA Staggering
+// CalculateOffset determines the TDMA sleep slice
+func CalculateOffset() time.Duration {
+	peerLock.RLock()
+	defer peerLock.RUnlock()
+
 	allUUIDs := make([]string, 0, len(peers)+1)
 	allUUIDs = append(allUUIDs, ServerUUID)
 	for uuid := range peers {
@@ -51,15 +56,13 @@ func recalculateLeader() {
 	}
 
 	totalNodes := len(allUUIDs)
-	if totalNodes > 0 {
-		slotDuration := 5000 / totalNodes
-		PhaseOffset = time.Duration(slotDuration*myRank) * time.Millisecond
-	} else {
-		PhaseOffset = 0
-	}
+	if totalNodes == 0 { totalNodes = 1 }
+	
+	slice := 5000 / totalNodes // 5000ms total window
+	
+	return time.Duration(slice * myRank) * time.Millisecond
 }
 
-// Ensure snapshotPeers is defined if called by main.go
 func snapshotPeers() {
 	ticker := time.NewTicker(60 * time.Second)
 	for {

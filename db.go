@@ -10,93 +10,111 @@ import (
 	"time"
 
 	"lukechampine.com/blake3"
-	_ "modernc.org/sqlite" // Changed for portability and scalability
+	_ "modernc.org/sqlite" 
 )
 
 // --- Core Database & Identity ---
 func initDB() {
 	os.MkdirAll("./data", 0755)
-	
+
 	// 1. Enable WAL Mode (Non-blocking reads) + 5s Timeout
 	var err error
+	// Note: Using "sqlite" driver name for modernc.org/sqlite, but passing the flags
 	db, err = sql.Open("sqlite", dbFile+"?_journal_mode=WAL&_busy_timeout=5000")
 	if err != nil { panic(err) }
 
-	// Force WAL
+	// Force WAL execution if the connection string didn't trigger it immediately
 	db.Exec("PRAGMA journal_mode=WAL;")
 
-	// 2. Define V3 Schema (UUIDs, Economy, Event Sourcing)
+	// 2. The V3 Schema
 	schema := `
+	-- Identity & Config (Excluded from Game State Hash)
 	CREATE TABLE IF NOT EXISTS system_meta (key TEXT PRIMARY KEY, value TEXT);
 
+	-- Users (Global Identity)
 	CREATE TABLE IF NOT EXISTS users (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		global_uuid TEXT UNIQUE,
+		global_uuid TEXT UNIQUE,          -- BLAKE3 Hash of PubKey
 		username TEXT, 
 		password_hash TEXT, 
-		credits INTEGER DEFAULT 0,
-		is_local BOOLEAN DEFAULT 1,
-		ed25519_pubkey TEXT
+		credits INTEGER DEFAULT 0,        -- Global Currency
+		is_local BOOLEAN DEFAULT 1,       -- 1=Local Player, 0=Visitor
+		ed25519_pubkey TEXT,              -- For verification
+		ed25519_priv_enc TEXT             -- Encrypted Private Key (Optional)
 	);
 
+	-- Solar Systems (The Map)
 	CREATE TABLE IF NOT EXISTS solar_systems (
-		id TEXT PRIMARY KEY, 
-		x INTEGER, y INTEGER, z INTEGER,
-		star_type TEXT, owner_uuid TEXT, tax_rate REAL DEFAULT 0.0,
+		id TEXT PRIMARY KEY,              -- UUID
+		x INTEGER, y INTEGER, z INTEGER,  -- Cluster Coordinates
+		star_type TEXT, 
+		owner_uuid TEXT, 
+		tax_rate REAL DEFAULT 0.0,
 		is_federated BOOLEAN DEFAULT 0
 	);
 
+	-- Planets (Details)
 	CREATE TABLE IF NOT EXISTS planets (
 		id INTEGER PRIMARY KEY AUTOINCREMENT, system_id TEXT, efficiency_seed TEXT, type TEXT,
 		FOREIGN KEY(system_id) REFERENCES solar_systems(id)
 	);
 
+	-- Colonies (The Economy)
 	CREATE TABLE IF NOT EXISTS colonies (
 		id INTEGER PRIMARY KEY AUTOINCREMENT, 
-		system_id TEXT, 
-		owner_uuid TEXT, 
+		system_id TEXT,
+		owner_uuid TEXT,
 		name TEXT,
 		
+		-- Population Classes
 		pop_laborers INTEGER DEFAULT 100,
 		pop_specialists INTEGER DEFAULT 0,
 		pop_elites INTEGER DEFAULT 0,
 
+		-- Resources (Tier 1 & 2)
 		food INTEGER DEFAULT 1000, water INTEGER DEFAULT 1000,
 		iron INTEGER DEFAULT 0, carbon INTEGER DEFAULT 0, gold INTEGER DEFAULT 0,
 		platinum INTEGER DEFAULT 0, uranium INTEGER DEFAULT 0, diamond INTEGER DEFAULT 0,
 		vegetation INTEGER DEFAULT 0, oxygen INTEGER DEFAULT 1000,
-		fuel INTEGER DEFAULT 0,
 
+		-- Stability
 		stability_current REAL DEFAULT 100.0,
 		stability_target REAL DEFAULT 100.0,
 		martial_law BOOLEAN DEFAULT 0,
-		buildings_json TEXT
+		buildings_json TEXT,
+		fuel INTEGER DEFAULT 0
 	);
 
+	-- Fleets (The Military/Logistics)
 	CREATE TABLE IF NOT EXISTS fleets (
 		id INTEGER PRIMARY KEY AUTOINCREMENT, 
 		owner_uuid TEXT, 
-		status TEXT, 
+		status TEXT,             -- ORBIT, TRANSIT
+		
+		-- Navigation
 		origin_system TEXT,
 		dest_system TEXT,
 		departure_tick INTEGER,
 		arrival_tick INTEGER,
-		ark_ship INTEGER DEFAULT 0,
+		start_coords TEXT,       -- JSON [x,y,z]
+		dest_coords TEXT,        -- JSON [x,y,z]
+
+		-- Composition
+		ark_ship INTEGER DEFAULT 0, -- The Expansion Unit
 		fighters INTEGER DEFAULT 0, 
 		frigates INTEGER DEFAULT 0, 
 		haulers INTEGER DEFAULT 0, 
-		fuel INTEGER DEFAULT 0,
-		start_coords TEXT, dest_coords TEXT
+		fuel INTEGER DEFAULT 0
 	);
 
+	-- Immutable Logs (Event Sourcing)
 	CREATE TABLE IF NOT EXISTS transaction_log (
 		id INTEGER PRIMARY KEY AUTOINCREMENT, 
 		tick INTEGER, 
 		action_type TEXT, 
 		payload_blob BLOB
 	);
-	CREATE INDEX IF NOT EXISTS idx_tx_tick ON transaction_log(tick);
-
+	
 	CREATE TABLE IF NOT EXISTS daily_snapshots (
 		day_id INTEGER PRIMARY KEY, 
 		state_blob BLOB,
@@ -107,14 +125,6 @@ func initDB() {
 	if _, err := db.Exec(schema); err != nil { panic(err) }
 
 	initIdentity()
-
-	// Resume Ledger State
-	var lastTick int
-	var lastHash string
-	err = db.QueryRow("SELECT tick, final_hash FROM daily_snapshots ORDER BY day_id DESC LIMIT 1").Scan(&lastTick, &lastHash)
-	if err == nil {
-		// CurrentTick = lastTick 
-	}
 }
 
 func initIdentity() {
@@ -128,7 +138,6 @@ func initIdentity() {
 		privHex := hex.EncodeToString(priv)
 		pubHex := hex.EncodeToString(pub)
 
-		// Fix: Use crypto/rand safely
 		rndBytes := make([]byte, 8)
 		rand.Read(rndBytes)
 		genesisData := fmt.Sprintf("GENESIS-%d-%x", time.Now().UnixNano(), rndBytes)

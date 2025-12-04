@@ -84,6 +84,8 @@ type HandshakeRequest struct {
 	GenesisHash string `json:"genesis_hash"`
 	PublicKey   string `json:"public_key"`
 	Address     string `json:"address"`
+	Tick        int    `json:"tick"` // New
+	Hash        string `json:"hash"` // New
 }
 
 type TransactionRequest struct {
