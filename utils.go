@@ -13,13 +13,19 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 
 	"github.com/pierrec/lz4/v4"
 	"golang.org/x/time/rate"
 	"lukechampine.com/blake3"
 )
+
+// FIXED: Defined the pool here so 'sync' is used and functions can find it
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		return new(bytes.Buffer)
+	},
+}
 
 func setupLogging() {
 	logDir := "./logs"
@@ -105,6 +111,7 @@ func middlewareSecurity(next http.Handler) http.Handler {
 		}
 
 		contentType := r.Header.Get("Content-Type")
+		// Simple check (contains) handles both strict and charset-appended types
 		if strings.Contains(contentType, "application/x-protobuf") {
 			next.ServeHTTP(w, r)
 			return
