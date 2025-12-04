@@ -37,10 +37,10 @@ var (
 	}
 
 	// Consensus State
-	Peers         = make(map[string]*Peer) // Capital "P" is crucial!
+	Peers         = make(map[string]*Peer)
 	peerLock      sync.RWMutex
 	CurrentTick   int64 = 0
-	PreviousHash  string = "GENESIS"       // <--- ADDED THIS
+	PreviousHash  string = "GENESIS"
 	TickDuration  int64 = 5000
 	MyRank        int   = 0
 	TotalPeers    int   = 1
@@ -54,16 +54,20 @@ var (
 	mapSnapshot      atomic.Value 
 	immigrationQueue = make(chan HandshakeRequest, 50)
 	
-	// Rate Limiting (For utils.go)
+	// Locking
+	stateLock sync.Mutex // Added this (Fixes simulation.go error)
+	
+	// Rate Limiting
 	ipLimiters = make(map[string]*rate.Limiter)
 	ipLock     sync.Mutex
 )
 
-// ... (Keep UnitCosts and BuildingCosts as they were) ...
+// --- Game Constants ---
 var UnitCosts = map[string]map[string]int{
 	"ark_ship": {"iron": 5000, "food": 5000, "fuel": 500, "pop_laborers": 100},
 	"fighter":  {"iron": 500, "fuel": 50, "pop_laborers": 1},
 	"frigate":  {"iron": 2000, "carbon": 500, "gold": 50, "pop_specialists": 5},
+	"scout":    {"iron": 100, "fuel": 50},
 }
 
 var BuildingCosts = map[string]map[string]int{

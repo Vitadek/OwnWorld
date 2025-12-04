@@ -14,7 +14,6 @@ func recalculateLeader() {
 		Score     int64
 	}
 	
-	// Use 'Peers', not 'peers'
 	myScore := (int64(CurrentTick) << 16) | int64(len(Peers))
 	candidates := []Candidate{{UUID: ServerUUID, Score: myScore}}
 	
@@ -34,7 +33,6 @@ func recalculateLeader() {
 	LeaderUUID = BestNode.UUID
 	IsLeader = (LeaderUUID == ServerUUID)
 
-	// TDMA Staggering
 	allUUIDs := make([]string, 0, len(Peers)+1)
 	allUUIDs = append(allUUIDs, ServerUUID)
 	for uuid := range Peers {
@@ -50,7 +48,6 @@ func recalculateLeader() {
 		}
 	}
 
-	// Calculate Phase Offset
 	totalNodes := len(allUUIDs)
 	if totalNodes > 0 {
 		slotDuration := 5000 / totalNodes
@@ -60,11 +57,15 @@ func recalculateLeader() {
 	}
 }
 
+func CalculateOffset() time.Duration {
+	return PhaseOffset
+}
+
 func snapshotPeers() {
 	ticker := time.NewTicker(60 * time.Second)
 	for {
 		<-ticker.C
-		// Atomic Snapshot Logic
-		// (Implemented in mapCacheUpdater in main logic, or here)
+		peerLock.RLock()
+		peerLock.RUnlock()
 	}
 }

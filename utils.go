@@ -2,12 +2,18 @@ package main
 
 import (
 	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/hex"
 	"io"
 	"log"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/pierrec/lz4/v4"
@@ -15,11 +21,15 @@ import (
 	"lukechampine.com/blake3"
 )
 
-var bufferPool = sync.Pool{New: func() interface{} { return new(bytes.Buffer) }}
-
-func hashBLAKE3(data []byte) string {
-	sum := blake3.Sum256(data)
-	return hex.EncodeToString(sum[:])
+func setupLogging() {
+	logDir := "./logs"
+	if _, err := os.Stat(logDir); os.IsNotExist(err) {
+		os.Mkdir(logDir, 0755)
+	}
+	fInfo, _ := os.OpenFile(filepath.Join(logDir, "server.log"), os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	fErr, _ := os.OpenFile(filepath.Join(logDir, "error.log"), os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	InfoLog = log.New(io.MultiWriter(os.Stdout, fInfo), "INFO: ", log.Ldate|log.Ltime|log.Lshortfile)
+	ErrorLog = log.New(io.MultiWriter(os.Stderr, fErr), "ERROR: ", log.Ldate|log.Ltime|log.Lshortfile)
 }
 
 func compressLZ4(src []byte) []byte {
@@ -40,14 +50,33 @@ func decompressLZ4(src []byte) []byte {
 	return out
 }
 
+func hashBLAKE3(data []byte) string {
+	sum := blake3.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
 func SignMessage(privKey ed25519.PrivateKey, msg []byte) []byte {
 	return ed25519.Sign(privKey, msg)
 }
 
 func VerifySignature(pubKey ed25519.PublicKey, msg, sig []byte) bool {
+	if len(pubKey) != ed25519.PublicKeySize {
+		return false
+	}
 	return ed25519.Verify(pubKey, msg, sig)
 }
 
+func encryptKey(key ed25519.PrivateKey, password string) string {
+	passHash := blake3.Sum256([]byte(password))
+	block, _ := aes.NewCipher(passHash[:])
+	gcm, _ := cipher.NewGCM(block)
+	nonce := make([]byte, gcm.NonceSize())
+	io.ReadFull(rand.Reader, nonce)
+	ciphertext := gcm.Seal(nonce, nonce, key, nil)
+	return hex.EncodeToString(ciphertext)
+}
+
+// --- Middleware ---
 
 func getLimiter(ip string) *rate.Limiter {
 	ipLock.Lock()
@@ -63,46 +92,28 @@ func getLimiter(ip string) *rate.Limiter {
 func middlewareSecurity(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ip, _, _ := net.SplitHostPort(r.RemoteAddr)
-		if ip != "::1" && ip != "127.0.0.1" {
+		if ip != "::1" && ip != "127.0.0.1" && ip != "" {
 			if !getLimiter(ip).Allow() {
 				http.Error(w, "Rate Limit Exceeded", 429)
 				return
 			}
 		}
+
+		if r.Method == "OPTIONS" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		contentType := r.Header.Get("Content-Type")
+		if strings.Contains(contentType, "application/x-protobuf") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		next.ServeHTTP(w, r)
 	})
 }
 
-func setupLogging() {
-	logDir := "./logs"
-	if _, err := os.Stat(logDir); os.IsNotExist(err) {
-		os.Mkdir(logDir, 0755)
-	}
-	fInfo, _ := os.OpenFile(filepath.Join(logDir, "server.log"), os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
-	fErr, _ := os.OpenFile(filepath.Join(logDir, "error.log"), os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
-	InfoLog = log.New(io.MultiWriter(os.Stdout, fInfo), "INFO: ", log.Ldate|log.Ltime|log.Lshortfile)
-	ErrorLog = log.New(io.MultiWriter(os.Stderr, fErr), "ERROR: ", log.Ldate|log.Ltime|log.Lshortfile)
-}
-func encryptKey(key ed25519.PrivateKey, password string) string {
-	// Hash password to get 32-byte key
-	passHash := blake3.Sum256([]byte(password))
-	block, _ := aes.NewCipher(passHash[:])
-	gcm, _ := cipher.NewGCM(block)
-	nonce := make([]byte, gcm.NonceSize())
-	io.ReadFull(rand.Reader, nonce)
-	ciphertext := gcm.Seal(nonce, nonce, key, nil)
-	return hex.EncodeToString(ciphertext)
-}
-func encryptKey(key ed25519.PrivateKey, password string) string {
-	// Hash password to get 32-byte key
-	passHash := blake3.Sum256([]byte(password))
-	block, _ := aes.NewCipher(passHash[:])
-	gcm, _ := cipher.NewGCM(block)
-	nonce := make([]byte, gcm.NonceSize())
-	io.ReadFull(rand.Reader, nonce)
-	ciphertext := gcm.Seal(nonce, nonce, key, nil)
-	return hex.EncodeToString(ciphertext)
-}
 func middlewareCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")

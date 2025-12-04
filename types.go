@@ -25,6 +25,13 @@ type HandshakeRequest struct {
 	Address     string `json:"address"`
 }
 
+type TransactionRequest struct {
+	UUID      string `json:"uuid"`
+	Tick      int64  `json:"tick"`
+	Payload   []byte `json:"payload"`
+	Signature []byte `json:"signature"`
+}
+
 type Colony struct {
 	ID            int            `json:"id"`
 	SystemID      string         `json:"system_id"`
@@ -44,11 +51,16 @@ type Colony struct {
 	Carbon     int `json:"carbon"`
 	Gold       int `json:"gold"`
 	Uranium    int `json:"uranium"`
+	Platinum   int `json:"platinum"` // Added
+	Diamond    int `json:"diamond"`  // Added
+	Vegetation int `json:"vegetation"` // Added
+	Oxygen     int `json:"oxygen"`     // Added
 	Fuel       int `json:"fuel"`
 	
 	// Stats
 	StabilityCurrent float64 `json:"stability_current"`
 	StabilityTarget  float64 `json:"stability_target"`
+	MartialLaw       bool    `json:"martial_law"`
 }
 
 type Fleet struct {
