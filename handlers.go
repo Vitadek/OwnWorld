@@ -522,3 +522,58 @@ func handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 
 	w.Write([]byte("OK"))
 }
+func handleHeartbeat(w http.ResponseWriter, r *http.Request) {
+	// 1. Read & Decompress
+	body, _ := io.ReadAll(r.Body)
+	decompressed := decompressLZ4(body)
+
+	var req HeartbeatRequest
+	if err := json.Unmarshal(decompressed, &req); err != nil {
+		http.Error(w, "Bad Payload", 400)
+		return
+	}
+
+	// 2. Layer 2: Unknown Peer Check
+	peerLock.RLock()
+	peer, known := Peers[req.UUID]
+	peerLock.RUnlock()
+
+	if !known {
+		// Optional: Trigger a handshake back to them?
+		// For now, ignore to prevent spam/reflection attacks
+		return
+	}
+
+	// 3. Layer 3: Probabilistic Verification (10% Chance)
+	// We verify signatures only occasionally to save CPU
+	if rand.Float32() < 0.10 {
+		msg := fmt.Sprintf("%s:%d", req.UUID, req.Tick)
+		sigBytes, _ := hex.DecodeString(req.Signature)
+		
+		if !VerifySignature(peer.PublicKey, []byte(msg), sigBytes) {
+			InfoLog.Printf("🚨 BAD SIG from %s. Ignored.", req.UUID)
+			return
+		}
+	}
+
+	// 4. Update Peer State
+	peerLock.Lock()
+	if p, ok := Peers[req.UUID]; ok {
+		p.LastSeen = time.Now()
+		p.LastTick = req.Tick
+		p.PeerCount = req.PeerCount
+	}
+	peerLock.Unlock()
+
+	// 5. Sync Logic
+	// If this heartbeat is from our Leader, sync our clock
+	if req.UUID == LeaderUUID {
+		syncClock(req.Tick)
+	} else {
+		// If this peer has a higher score than our current leader, 
+		// trigger a recount to potentially depose the leader
+		recalculateLeader()
+	}
+
+	w.Write([]byte("OK"))
+}

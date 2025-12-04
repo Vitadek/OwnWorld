@@ -80,7 +80,7 @@ func main() {
 
 	// Start Background Services
 	go processImmigration()
-	go snapshotPeers()
+	go startHeartbeatLoop()
 	go bootstrapFederation()
 	go runGameLoop()
 
@@ -91,6 +91,7 @@ func main() {
 	mux.HandleFunc("/federation/sync", handleSyncLedger)
 	mux.HandleFunc("/federation/map", handleMap)
 	mux.HandleFunc("/federation/transaction", handleFederationTransaction)
+	mux.HandleFunc("/federation/heartbeat", handleHeartbeat)
 
 	// Client API Endpoints
 	mux.HandleFunc("/api/register", handleRegister)

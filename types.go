@@ -76,3 +76,10 @@ type Fleet struct {
 	Fighters   int `json:"fighters"`
 	Frigates   int `json:"frigates"`
 }
+type HeartbeatRequest struct {
+	UUID      string `json:"uuid"`
+	Tick      int64  `json:"tick"`
+	PeerCount int    `json:"peer_count"`
+	GenHash   string `json:"gen_hash"`
+	Signature string `json:"sig"` // Hex encoded Ed25519 signature
+}
