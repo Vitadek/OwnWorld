@@ -14,7 +14,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 
 	"github.com/pierrec/lz4/v4"
 	"golang.org/x/time/rate"
