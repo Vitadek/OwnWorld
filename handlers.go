@@ -24,11 +24,9 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	json.NewDecoder(r.Body).Decode(&req)
 	
 	// 1. Generate Identity
-	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
 	userUUID := hashBLAKE3(pub) 
 	pubHex := hex.EncodeToString(pub)
-	// Encrypt private key in real app!
-	privHex := hex.EncodeToString(priv) 
 	passHash := hashBLAKE3([]byte(req.Password))
 
 	_, err := db.Exec(`INSERT INTO users (global_uuid, username, password_hash, is_local, ed25519_pubkey) 

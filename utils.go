@@ -46,9 +46,6 @@ func VerifySignature(pub ed25519.PublicKey, msg, sig []byte) bool {
 	return ed25519.Verify(pub, msg, sig)
 }
 
-// Middleware
-var ipLimiters = make(map[string]*rate.Limiter)
-var ipLock sync.Mutex
 
 func getLimiter(ip string) *rate.Limiter {
 	ipLock.Lock(); defer ipLock.Unlock()
@@ -66,4 +63,17 @@ func middlewareSecurity(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+func setupLogging() {
+    // Ensure logs directory exists
+    if _, err := os.Stat("./logs"); os.IsNotExist(err) {
+        os.Mkdir("./logs", 0755)
+    }
+
+    // Open log files
+    logFile, _ := os.OpenFile("./logs/server.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+
+    // Initialize Global Loggers
+    InfoLog = log.New(io.MultiWriter(os.Stdout, logFile), "INFO: ", log.Ldate|log.Ltime|log.Lshortfile)
+    ErrorLog = log.New(io.MultiWriter(os.Stderr, logFile), "ERROR: ", log.Ldate|log.Ltime|log.Lshortfile)
 }
