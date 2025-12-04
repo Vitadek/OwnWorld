@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/ed25519"
+	"bytes"
 	"database/sql"
 	"log"
 	"sync"
@@ -60,6 +61,12 @@ var (
 	// Rate Limiting
 	ipLimiters = make(map[string]*rate.Limiter)
 	ipLock     sync.Mutex
+
+	bufferPool = sync.Pool{
+        New: func() interface{} {
+            return new(bytes.Buffer)
+        },
+    }
 )
 
 // --- Game Constants ---

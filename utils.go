@@ -13,7 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings" // <--- Added this
+	"strings"
 	"sync"
 
 	"github.com/pierrec/lz4/v4"
@@ -21,12 +21,8 @@ import (
 	"lukechampine.com/blake3"
 )
 
-// FIXED: Defined the pool here so 'sync' is used and functions can find it
-var bufferPool = sync.Pool{
-	New: func() interface{} {
-		return new(bytes.Buffer)
-	},
-}
+// NOTE: bufferPool is defined in globals.go
+// NOTE: ipLimiters and ipLock are defined in globals.go
 
 func setupLogging() {
 	logDir := "./logs"
