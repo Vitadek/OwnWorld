@@ -17,6 +17,50 @@ import (
 )
 
 // --- Federation Handlers ---
+func handleSyncLedger(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("X-Fed-Key") != os.Getenv("FEDERATION_KEY") {
+		http.Error(w, "Unauthorized", 401)
+		return
+	}
+
+	sinceDay, _ := strconv.Atoi(r.URL.Query().Get("since_day"))
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	rows, err := db.Query(`SELECT day_id, state_blob, final_hash
+	                       FROM daily_snapshots
+	                       WHERE day_id > ?
+	                       ORDER BY day_id ASC
+	                       LIMIT ?`, sinceDay, limit)
+	if err != nil {
+		http.Error(w, "DB Error", 500)
+		return
+	}
+	defer rows.Close()
+
+	type SnapshotItem struct {
+		DayID     int    `json:"day_id"`
+		Blob      []byte `json:"blob"`
+		FinalHash string `json:"hash"`
+	}
+
+	var history []SnapshotItem
+	for rows.Next() {
+		var h SnapshotItem
+		if err := rows.Scan(&h.DayID, &h.Blob, &h.FinalHash); err != nil {
+			continue
+		}
+		history = append(history, h)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(history)
+}
 
 func processImmigration() {
 	for req := range immigrationQueue {
@@ -207,8 +251,8 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	privEnc := encryptKey(priv, req.Password)
 	passHash := hashBLAKE3([]byte(req.Password))
 
-	// 2. Insert User
-	_, err := db.Exec(`INSERT INTO users (global_uuid, username, password_hash, is_local, ed25519_pubkey, ed25519_priv_enc) 
+	// 2. Insert User (With UUID)
+	_, err := db.Exec(`INSERT INTO users (global_uuid, username, password_hash, is_local, ed25519_pubkey, ed25519_priv_enc)
 	                   VALUES (?, ?, ?, 1, ?, ?)`, userUUID, req.Username, passHash, pubHex, privEnc)
 
 	if err != nil {
@@ -216,39 +260,47 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3. Goldilocks Search
-	mrand.Seed(time.Now().UnixNano())
-	var sysID string
-	found := false
+	// 3. Goldilocks Search (Cluster Spawning)
+	// Anchor to ServerLoc, but offset by UserUUID to prevent stacking
+	uuidBytes, _ := hex.DecodeString(userUUID)
+	offsetX := int(int8(uuidBytes[0]))
+	offsetY := int(int8(uuidBytes[1]))
+	offsetZ := int(int8(uuidBytes[2]))
 
-	for i := 0; i < 50; i++ {
-		id := mrand.Intn(1000000)
-		if GetEfficiency(id, "food") > 0.9 {
-			sysID = fmt.Sprintf("sys-%d", id)
-			found = true
+	sysX := ServerLoc[0] + offsetX
+	sysY := ServerLoc[1] + offsetY
+	sysZ := ServerLoc[2] + offsetZ
+
+	// Deterministic System ID
+	sysID := fmt.Sprintf("sys-%d-%d-%d", sysX, sysY, sysZ)
+
+	// Check Efficiency (Shift if bad)
+	for i := 0; i < 10; i++ {
+		if GetEfficiency(sysX*1000+sysY, "food") > 0.8 {
 			break
 		}
-	}
-	if !found {
-		sysID = "sys-fallback"
+		sysX++
+		sysID = fmt.Sprintf("sys-%d-%d-%d", sysX, sysY, sysZ)
 	}
 
-	// Create System
-	db.Exec("INSERT OR IGNORE INTO solar_systems (id, owner_uuid) VALUES (?, ?)", sysID, ServerUUID)
+	// 4. Create System
+	db.Exec("INSERT OR IGNORE INTO solar_systems (id, x, y, z, star_type, owner_uuid) VALUES (?, ?, ?, ?, 'G2V', ?)",
+		sysID, sysX, sysY, sysZ, ServerUUID)
 
-	// 4. Create Homestead (Colony)
+	// 5. Create Homestead (Colony)
 	startBuilds := `{"farm": 5, "iron_mine": 5, "urban_housing": 10}`
-	db.Exec(`INSERT INTO colonies (system_id, owner_uuid, name, pop_laborers, food, iron, buildings_json) 
+	db.Exec(`INSERT INTO colonies (system_id, owner_uuid, name, pop_laborers, food, iron, buildings_json)
 	         VALUES (?, ?, ?, 100, 2000, 1000, ?)`, sysID, userUUID, req.Username+" Prime", startBuilds)
 
-	// 5. Create Ark Ship
-	db.Exec(`INSERT INTO fleets (owner_uuid, status, origin_system, ark_ship, fuel) 
+	// 6. Create Ark Ship (Expansion Tool)
+	db.Exec(`INSERT INTO fleets (owner_uuid, status, origin_system, ark_ship, fuel)
 			 VALUES (?, 'ORBIT', ?, 1, 2000)`, userUUID, sysID)
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":    "registered",
 		"user_uuid": userUUID,
 		"system_id": sysID,
+		"location":  []int{sysX, sysY, sysZ},
 		"message":   "Identity Secured. Colony Founded. Ark Ship Ready.",
 	})
 }

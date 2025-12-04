@@ -11,13 +11,11 @@ import (
 )
 
 func initConfig() {
-	// Default to true unless explicitly disabled
 	Config.CommandControl = true
 	if os.Getenv("OWNWORLD_COMMAND_CONTROL") == "false" {
 		Config.CommandControl = false 
 	}
 
-	// Default to promiscuous unless strict is requested
 	Config.PeeringMode = "promiscuous"
 	if mode := os.Getenv("OWNWORLD_PEERING_MODE"); mode == "strict" {
 		Config.PeeringMode = "strict"
@@ -37,18 +35,15 @@ func bootstrapFederation() {
 		if seed == "" { continue }
 		
 		var myGenHash string
-		// FIX: Capture the error from Scan
 		err := db.QueryRow("SELECT value FROM system_meta WHERE key='genesis_hash'").Scan(&myGenHash)
-		if err != nil { 
-			ErrorLog.Printf("Failed to read local Genesis Hash: %v", err)
-			continue 
-		}
+		if err != nil { continue }
 
 		req := HandshakeRequest{
 			UUID:        ServerUUID,
 			GenesisHash: myGenHash,
 			PublicKey:   hex.EncodeToString(PublicKey),
 			Address:     "http://localhost:8080",
+			Location:    ServerLoc, // Send my location (or 0,0,0 if new)
 		}
 		payload, _ := json.Marshal(req)
 		compressed := compressLZ4(payload)
@@ -64,9 +59,33 @@ func bootstrapFederation() {
 			ErrorLog.Printf("Seed %s unreachable: %v", seed, err)
 			continue
 		}
+		
+		// Read Response to get Seed's Location
+		var respData HandshakeResponse
+		json.NewDecoder(resp.Body).Decode(&respData)
 		resp.Body.Close()
 		
-		InfoLog.Printf("Handshake response from %s: %s", seed, resp.Status)
+		if respData.Status == "Queued" || respData.Status == "Accepted" {
+			InfoLog.Printf("✅ Connected to Galaxy via Seed %s", seed)
+			
+			// UPDATE LOCAL COORDS based on Seed
+			// This ensures we spawn in the "Cluster" not in the Void
+			if len(respData.Location) == 3 {
+				// We don't override ServerLoc here immediately unless we are brand new (0,0,0)
+				// If we are new:
+				if ServerLoc[0] == 0 && ServerLoc[1] == 0 && ServerLoc[2] == 0 {
+					ServerLoc = respData.Location
+					// In reality, we'd add a small random offset here for the Server itself,
+					// but for now let's just adopt the cluster center.
+					// Persist:
+					db.Exec("INSERT OR REPLACE INTO system_meta (key, value) VALUES ('loc_x', ?)", fmt.Sprint(ServerLoc[0]))
+					db.Exec("INSERT OR REPLACE INTO system_meta (key, value) VALUES ('loc_y', ?)", fmt.Sprint(ServerLoc[1]))
+					db.Exec("INSERT OR REPLACE INTO system_meta (key, value) VALUES ('loc_z', ?)", fmt.Sprint(ServerLoc[2]))
+					InfoLog.Printf("📍 Server Cluster Location Set: %v", ServerLoc)
+				}
+			}
+			break
+		}
 	}
 }
 
@@ -78,22 +97,21 @@ func main() {
 	InfoLog.Println("OWNWORLD BOOT SEQUENCE (V3.1)")
 	InfoLog.Printf("Mode: %v | Control: %v", Config.PeeringMode, Config.CommandControl)
 
-	// Start Background Services
 	go processImmigration()
-	go startHeartbeatLoop()
+	go startHeartbeatLoop() // Starts the heartbeat broadcaster
 	go bootstrapFederation()
 	go runGameLoop()
 
 	mux := http.NewServeMux()
 	
-	// Federation Endpoints
+	// Federation
 	mux.HandleFunc("/federation/handshake", handleHandshake)
 	mux.HandleFunc("/federation/sync", handleSyncLedger)
 	mux.HandleFunc("/federation/map", handleMap)
 	mux.HandleFunc("/federation/transaction", handleFederationTransaction)
-	mux.HandleFunc("/federation/heartbeat", handleHeartbeat)
+	mux.HandleFunc("/federation/heartbeat", handleHeartbeat) // Needs to be wired here
 
-	// Client API Endpoints
+	// Client API
 	mux.HandleFunc("/api/register", handleRegister)
 	mux.HandleFunc("/api/deploy", handleDeploy)
 	mux.HandleFunc("/api/build", handleBuild)
@@ -102,18 +120,16 @@ func main() {
 	mux.HandleFunc("/api/fleet/launch", handleFleetLaunch)
 	mux.HandleFunc("/api/state", handleState)
 
-	// Public Status Check
 	mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"uuid": ServerUUID, "tick": CurrentTick, "leader": LeaderUUID,
+			"location": ServerLoc,
 		})
 	})
 
-	// Wrap Middleware
 	handler := middlewareSecurity(mux)
 	handler = middlewareCORS(handler)
 
-	// Secure Server Config (Slow Loris Protection)
 	server := &http.Server{
 		Addr:         ":8080",
 		Handler:      handler,

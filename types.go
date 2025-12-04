@@ -27,9 +27,9 @@ type HandshakeRequest struct {
         Location    []int  `json:"location"` // My Location
 }
 type HandshakeResponse struct {
-	Status   string `json:"status"`
-	UUID     string `json:"uuid"`
-	Location []int  `json:"location"` // Seed's Location
+    Status   string `json:"status"`
+    UUID     string `json:"uuid"`
+    Location []int  `json:"location"` // [x, y, z] - The Seed's coordinates
 }
 
 type TransactionRequest struct {
