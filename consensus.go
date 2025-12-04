@@ -1,71 +1,106 @@
 package main
 
 import (
-	"sort"
+	"bytes"
+	"encoding/hex"
+	"encoding/json"
+	"net/http"
+	"sync"
 	"time"
+
+	// Assuming you have the proto package generated
+	// pb "ownworld/pkg/federation" 
+	// "google.golang.org/protobuf/proto"
 )
 
-func recalculateLeader() {
+// Replaces snapshotPeers
+func startHeartbeatLoop() {
+	// Tick every 10 seconds (2 Game Ticks)
+	ticker := time.NewTicker(10 * time.Second)
+	
+	for range ticker.C {
+		broadcastHeartbeat()
+		pruneDeadPeers()
+	}
+}
+
+func broadcastHeartbeat() {
 	peerLock.RLock()
-	defer peerLock.RUnlock()
-
-	type Candidate struct {
-		UUID      string
-		Score     int64
-	}
-	
-	myScore := (int64(CurrentTick) << 16) | int64(len(Peers))
-	candidates := []Candidate{{UUID: ServerUUID, Score: myScore}}
-	
+	peersList := make([]Peer, 0, len(Peers))
 	for _, p := range Peers {
-		pScore := (int64(p.LastTick) << 16) | 0 
-		candidates = append(candidates, Candidate{UUID: p.UUID, Score: pScore})
+		peersList = append(peersList, *p)
+	}
+	peerLock.RUnlock()
+
+	// 1. Construct Heartbeat Payload
+	// (Using JSON-over-LZ4 for now to match your handlers)
+	hb := HandshakeRequest{ // Reusing this struct or create a Heartbeat struct
+		UUID:        ServerUUID,
+		GenesisHash: GenesisHash,
+		// We need to send current tick/peer count for election
+		// Add these fields to HandshakeRequest or create a dedicated struct
+	}
+	
+	// Let's create a dedicated lightweight struct for the wire
+	type HeartbeatWire struct {
+		UUID      string `json:"uuid"`
+		Tick      int64  `json:"tick"`
+		PeerCount int    `json:"peer_count"`
+		GenHash   string `json:"gen_hash"`
+		Signature string `json:"sig"` // Hex encoded
 	}
 
-	sort.Slice(candidates, func(i, j int) bool {
-		if candidates[i].Score != candidates[j].Score {
-			return candidates[i].Score > candidates[j].Score
-		}
-		return candidates[i].UUID > candidates[j].UUID
-	})
-
-	BestNode := candidates[0]
-	LeaderUUID = BestNode.UUID
-	IsLeader = (LeaderUUID == ServerUUID)
-
-	allUUIDs := make([]string, 0, len(Peers)+1)
-	allUUIDs = append(allUUIDs, ServerUUID)
-	for uuid := range Peers {
-		allUUIDs = append(allUUIDs, uuid)
-	}
-	sort.Strings(allUUIDs)
-
-	myRank := 0
-	for i, id := range allUUIDs {
-		if id == ServerUUID {
-			myRank = i
-			break
-		}
+	myTick := atomic.LoadInt64(&CurrentTick)
+	
+	payload := HeartbeatWire{
+		UUID:      ServerUUID,
+		Tick:      myTick,
+		PeerCount: len(peersList),
+		GenHash:   GenesisHash,
 	}
 
-	totalNodes := len(allUUIDs)
-	if totalNodes > 0 {
-		slotDuration := 5000 / totalNodes
-		PhaseOffset = time.Duration(slotDuration*myRank) * time.Millisecond
-	} else {
-		PhaseOffset = 0
+	// 2. Sign It (Integrity)
+	// Sign the non-signature parts (UUID + Tick)
+	msg := fmt.Sprintf("%s:%d", payload.UUID, payload.Tick)
+	sig := SignMessage(PrivateKey, []byte(msg))
+	payload.Signature = hex.EncodeToString(sig)
+
+	// 3. Serialize & Compress
+	data, _ := json.Marshal(payload)
+	compressed := compressLZ4(data)
+
+	// 4. Broadcast (Fan-out)
+	var wg sync.WaitGroup
+	for _, p := range peersList {
+		wg.Add(1)
+		go func(target Peer) {
+			defer wg.Done()
+			sendHeartbeat(target.Url, compressed)
+		}(p)
+	}
+	wg.Wait()
+}
+
+func sendHeartbeat(url string, data []byte) {
+	client := &http.Client{Timeout: 2 * time.Second} // Fast timeout
+	resp, err := client.Post(url+"/federation/heartbeat", "application/x-ownworld-fed", bytes.NewBuffer(data))
+	if err == nil {
+		resp.Body.Close()
 	}
 }
 
-func CalculateOffset() time.Duration {
-	return PhaseOffset
-}
+func pruneDeadPeers() {
+	peerLock.Lock()
+	defer peerLock.Unlock()
 
-func snapshotPeers() {
-	ticker := time.NewTicker(60 * time.Second)
-	for {
-		<-ticker.C
-		peerLock.RLock()
-		peerLock.RUnlock()
+	now := time.Now()
+	for id, p := range Peers {
+		// If haven't heard in 5 minutes, remove
+		if now.Sub(p.LastSeen) > 5*time.Minute {
+			InfoLog.Printf("🍂 Pruning dead peer: %s", id)
+			delete(Peers, id)
+			// Trigger election since peer count changed
+			go recalculateLeader() 
+		}
 	}
 }
