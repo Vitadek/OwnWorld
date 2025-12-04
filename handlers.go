@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"io"
 	"math"
-	mrand "math/rand"
+	mrand "math/rand" // Aliased to avoid conflict with crypto/rand
 	"net/http"
 	"os"
 	"strconv"
@@ -88,7 +88,7 @@ func handleFederationTransaction(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("ACK"))
 }
 
-// This is the ONE AND ONLY handleHeartbeat
+// One single definition of handleHeartbeat
 func handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	// 1. Read & Decompress
 	body, _ := io.ReadAll(r.Body)
@@ -110,7 +110,6 @@ func handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 3. Layer 3: Probabilistic Verification (10% Chance)
-	// FIX: Use mrand (math/rand) instead of crypto/rand
 	if mrand.Float32() < 0.10 {
 		msg := fmt.Sprintf("%s:%d", req.UUID, req.Tick)
 		sigBytes, _ := hex.DecodeString(req.Signature)

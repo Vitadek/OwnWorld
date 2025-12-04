@@ -2,27 +2,35 @@ syntax = "proto3";
 package federation;
 option go_package = "./pkg/federation";
 
+// The "Envelope" for all federation messages
+message Packet {
+  string sender_uuid = 1;
+  bytes signature = 2; // Ed25519
+  
+  oneof content {
+    Heartbeat heartbeat = 3;
+    FleetMove fleet_move = 4;
+    Handshake handshake = 5;
+  }
+}
+
 message Heartbeat {
-  string server_uuid = 1;
-  int64 tick = 2;
-  int32 peer_count = 3;
-  string genesis_hash = 4;
+  int64 tick = 1;
+  int32 peer_count = 2;
+  string genesis_hash = 3;
 }
 
 message FleetMove {
-  string fleet_id = 1;
-  string owner_uuid = 2;
-  bytes compressed_fleet_data = 3; // LZ4 blob
+  int32 fleet_id = 1;
+  string origin_system = 2;
+  string dest_system = 3;
   int64 arrival_tick = 4;
-  bytes signature = 5;
+  // Compressed JSON of the fleet composition (Fighters, Ark, Cargo)
+  bytes fleet_payload = 5; 
 }
 
-message MarketOrder {
-  string order_id = 1;
-  string item = 2;
-  int32 price = 3;
-  int32 quantity = 4;
-  bool is_buy = 5;
-  string seller_uuid = 6;
-  bytes signature = 7;
+message Handshake {
+  string public_key = 1;
+  string address = 2;
+  string genesis_hash = 3;
 }
