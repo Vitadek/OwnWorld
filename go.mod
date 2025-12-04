@@ -8,6 +8,7 @@ require (
 	golang.org/x/time v0.14.0
 	lukechampine.com/blake3 v1.4.1
 	modernc.org/sqlite v1.40.1
+        google.golang.org/protobuf v1.33.0
 )
 
 require (

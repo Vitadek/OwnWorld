@@ -5,6 +5,38 @@ import (
 	"time"
 )
 
+// CalculateOffset determines the TDMA sleep slice to prevent CPU spikes
+func CalculateOffset() time.Duration {
+    peerLock.RLock()
+    defer peerLock.RUnlock()
+
+    // 1. Collect all known nodes
+    allUUIDs := make([]string, 0, len(peers)+1)
+    allUUIDs = append(allUUIDs, ServerUUID)
+    for uuid := range peers {
+        allUUIDs = append(allUUIDs, uuid)
+    }
+    
+    // 2. Sort deterministically
+    sort.Strings(allUUIDs)
+
+    // 3. Find My Rank
+    myRank := 0
+    for i, id := range allUUIDs {
+        if id == ServerUUID {
+            myRank = i
+            break
+        }
+    }
+
+    // 4. Calculate Slice (5000ms / NodeCount)
+    totalNodes := len(allUUIDs)
+    if totalNodes == 0 { totalNodes = 1 } // Safety
+    slice := 5000 / totalNodes
+    
+    return time.Duration(slice * myRank) * time.Millisecond
+}
+
 // Phase 4.1: Leader Election & Score Logic
 func recalculateLeader() {
 	peerLock.RLock()
