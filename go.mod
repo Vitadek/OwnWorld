@@ -6,9 +6,9 @@ require (
 	github.com/mattn/go-sqlite3 v1.14.32
 	github.com/pierrec/lz4/v4 v4.1.22
 	golang.org/x/time v0.14.0
+	google.golang.org/protobuf v1.33.0
 	lukechampine.com/blake3 v1.4.1
 	modernc.org/sqlite v1.40.1
-        google.golang.org/protobuf v1.33.0
 )
 
 require (

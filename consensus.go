@@ -67,34 +67,6 @@ func recalculateLeader() {
 	IsLeader = (LeaderUUID == ServerUUID)
 }
 
-// CalculateOffset determines the TDMA sleep slice
-func CalculateOffset() time.Duration {
-	peerLock.RLock()
-	defer peerLock.RUnlock()
-
-	allUUIDs := make([]string, 0, len(peers)+1)
-	allUUIDs = append(allUUIDs, ServerUUID)
-	for uuid := range peers {
-		allUUIDs = append(allUUIDs, uuid)
-	}
-	sort.Strings(allUUIDs)
-
-	myRank := 0
-	for i, id := range allUUIDs {
-		if id == ServerUUID {
-			myRank = i
-			break
-		}
-	}
-
-	totalNodes := len(allUUIDs)
-	if totalNodes == 0 { totalNodes = 1 }
-	
-	slice := 5000 / totalNodes // 5000ms total window
-	
-	return time.Duration(slice * myRank) * time.Millisecond
-}
-
 func snapshotPeers() {
 	ticker := time.NewTicker(60 * time.Second)
 	for {
