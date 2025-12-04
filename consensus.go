@@ -5,39 +5,6 @@ import (
 	"time"
 )
 
-// CalculateOffset determines the TDMA sleep slice to prevent CPU spikes
-func CalculateOffset() time.Duration {
-    peerLock.RLock()
-    defer peerLock.RUnlock()
-
-    // 1. Collect all known nodes
-    allUUIDs := make([]string, 0, len(peers)+1)
-    allUUIDs = append(allUUIDs, ServerUUID)
-    for uuid := range peers {
-        allUUIDs = append(allUUIDs, uuid)
-    }
-    
-    // 2. Sort deterministically
-    sort.Strings(allUUIDs)
-
-    // 3. Find My Rank
-    myRank := 0
-    for i, id := range allUUIDs {
-        if id == ServerUUID {
-            myRank = i
-            break
-        }
-    }
-
-    // 4. Calculate Slice (5000ms / NodeCount)
-    totalNodes := len(allUUIDs)
-    if totalNodes == 0 { totalNodes = 1 } // Safety
-    slice := 5000 / totalNodes
-    
-    return time.Duration(slice * myRank) * time.Millisecond
-}
-
-// Phase 4.1: Leader Election & Score Logic
 func recalculateLeader() {
 	peerLock.RLock()
 	defer peerLock.RUnlock()
@@ -47,10 +14,11 @@ func recalculateLeader() {
 		Score     int64
 	}
 	
-	myScore := (int64(CurrentTick) << 16) | int64(len(peers))
+	// Use 'Peers', not 'peers'
+	myScore := (int64(CurrentTick) << 16) | int64(len(Peers))
 	candidates := []Candidate{{UUID: ServerUUID, Score: myScore}}
 	
-	for _, p := range peers {
+	for _, p := range Peers {
 		pScore := (int64(p.LastTick) << 16) | 0 
 		candidates = append(candidates, Candidate{UUID: p.UUID, Score: pScore})
 	}
@@ -65,14 +33,38 @@ func recalculateLeader() {
 	BestNode := candidates[0]
 	LeaderUUID = BestNode.UUID
 	IsLeader = (LeaderUUID == ServerUUID)
+
+	// TDMA Staggering
+	allUUIDs := make([]string, 0, len(Peers)+1)
+	allUUIDs = append(allUUIDs, ServerUUID)
+	for uuid := range Peers {
+		allUUIDs = append(allUUIDs, uuid)
+	}
+	sort.Strings(allUUIDs)
+
+	myRank := 0
+	for i, id := range allUUIDs {
+		if id == ServerUUID {
+			myRank = i
+			break
+		}
+	}
+
+	// Calculate Phase Offset
+	totalNodes := len(allUUIDs)
+	if totalNodes > 0 {
+		slotDuration := 5000 / totalNodes
+		PhaseOffset = time.Duration(slotDuration*myRank) * time.Millisecond
+	} else {
+		PhaseOffset = 0
+	}
 }
 
 func snapshotPeers() {
 	ticker := time.NewTicker(60 * time.Second)
 	for {
 		<-ticker.C
-		peerLock.RLock()
-		// Basic snapshot logic would go here
-		peerLock.RUnlock()
+		// Atomic Snapshot Logic
+		// (Implemented in mapCacheUpdater in main logic, or here)
 	}
 }

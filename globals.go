@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"crypto/ed25519"
 	"database/sql"
 	"log"
@@ -12,68 +11,67 @@ import (
 	"golang.org/x/time/rate"
 )
 
-var (
-	// Database
-	dbFile = "./data/ownworld.db"
-	db     *sql.DB
-
-	// Identity
-	ServerUUID string
-	PrivateKey ed25519.PrivateKey
-	PublicKey  ed25519.PublicKey
-
-	// Networking
-	peers            = make(map[string]*Peer)
-	peerLock         sync.RWMutex
-	immigrationQueue = make(chan HandshakeRequest, 50)
-	ipLimiters       = make(map[string]*rate.Limiter)
-	ipLock           sync.Mutex
-	mapSnapshot      atomic.Value
-
-	// Time & Consensus
-	CurrentTick  int           = 0
-	PreviousHash string        = "GENESIS"
-	IsLeader     bool          = true
-	LeaderUUID   string        = ""
-	PhaseOffset  time.Duration = 0
-	stateLock    sync.Mutex
-
-	// Configuration
-	Config struct {
-		CommandControl bool   
-		PeeringMode    string 
-	}
-
-	// Logging
-	InfoLog  *log.Logger
-	ErrorLog *log.Logger
+// --- Configuration ---
+const (
+	DBPath          = "./data/ownworld.db"
+	MinTickDuration = 4000
+	MaxTickDuration = 6000
 )
 
-// Memory Pool
-var bufferPool = sync.Pool{
-	New: func() interface{} {
-		return new(bytes.Buffer)
-	},
+var (
+	// Infrastructure
+	db       *sql.DB
+	InfoLog  *log.Logger
+	ErrorLog *log.Logger
+
+	// Identity
+	ServerUUID  string
+	GenesisHash string
+	PrivateKey  ed25519.PrivateKey
+	PublicKey   ed25519.PublicKey
+
+	// Config
+	Config struct {
+		CommandControl bool
+		PeeringMode    string
+	}
+
+	// Consensus State
+	Peers         = make(map[string]*Peer) // Capital "P" is crucial!
+	peerLock      sync.RWMutex
+	CurrentTick   int64 = 0
+	PreviousHash  string = "GENESIS"       // <--- ADDED THIS
+	TickDuration  int64 = 5000
+	MyRank        int   = 0
+	TotalPeers    int   = 1
+	PhaseOffset   time.Duration = 0
+	
+	// Leader
+	IsLeader   bool = true
+	LeaderUUID string
+
+	// Caches & Queues
+	mapSnapshot      atomic.Value 
+	immigrationQueue = make(chan HandshakeRequest, 50)
+	
+	// Rate Limiting (For utils.go)
+	ipLimiters = make(map[string]*rate.Limiter)
+	ipLock     sync.Mutex
+)
+
+// ... (Keep UnitCosts and BuildingCosts as they were) ...
+var UnitCosts = map[string]map[string]int{
+	"ark_ship": {"iron": 5000, "food": 5000, "fuel": 500, "pop_laborers": 100},
+	"fighter":  {"iron": 500, "fuel": 50, "pop_laborers": 1},
+	"frigate":  {"iron": 2000, "carbon": 500, "gold": 50, "pop_specialists": 5},
 }
 
 var BuildingCosts = map[string]map[string]int{
-	"farm":          {"iron": 10},
-	"well":          {"iron": 10},
-	"iron_mine":     {"carbon": 50},
-	"urban_housing": {"iron": 100, "carbon": 100},
-	"shipyard":      {"iron": 1000, "carbon": 500},
-}
-
-// V3.1: Unit Construction Costs
-var UnitCosts = map[string]map[string]int{
-	"ark_ship": {
-		"iron": 5000, 
-		"food": 5000, 
-		"fuel": 500, 
-		"pop_laborers": 100,
-	},
-	"scout": {
-		"iron": 500,
-		"fuel": 50,
-	},
+	"farm":            {"iron": 10},
+	"well":            {"iron": 10},
+	"iron_mine":       {"food": 500},
+	"shipyard":        {"iron": 2000, "carbon": 500},
+	"urban_housing":   {"iron": 50},
+	"pilot_academy":   {"iron": 1000, "gold": 100},
+	"financial_center": {"iron": 5000, "gold": 1000},
 }

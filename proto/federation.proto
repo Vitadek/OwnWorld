@@ -2,30 +2,27 @@ syntax = "proto3";
 package federation;
 option go_package = "./pkg/federation";
 
-// The master container for all Federation Traffic
-message Packet {
-    string sender_uuid = 1;
-    int64 timestamp = 2;
-    bytes signature = 3; // Ed25519 Signature of the 'payload'
-    
-    oneof content {
-        Heartbeat heartbeat = 4;
-        FleetMove fleet_move = 5;
-    }
-}
-
 message Heartbeat {
-    int64 tick = 1;
-    int32 peer_count = 2;
-    string genesis_hash = 3; // Anti-Split-Brain
+  string server_uuid = 1;
+  int64 tick = 2;
+  int32 peer_count = 3;
+  string genesis_hash = 4;
 }
 
 message FleetMove {
-    string fleet_id = 1;
-    string owner_uuid = 2;
-    string dest_system = 3;
-    int64 arrival_tick = 4;
-    
-    // Compressed Colony/Fleet Data (JSON-over-Protobuf for flexibility)
-    bytes compressed_state = 5; 
+  string fleet_id = 1;
+  string owner_uuid = 2;
+  bytes compressed_fleet_data = 3; // LZ4 blob
+  int64 arrival_tick = 4;
+  bytes signature = 5;
+}
+
+message MarketOrder {
+  string order_id = 1;
+  string item = 2;
+  int32 price = 3;
+  int32 quantity = 4;
+  bool is_buy = 5;
+  string seller_uuid = 6;
+  bytes signature = 7;
 }

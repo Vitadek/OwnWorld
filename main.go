@@ -132,7 +132,7 @@ func bootstrapFederation() {
 					h.DayID, h.Blob, h.FinalHash)
 
 				PreviousHash = h.FinalHash
-				CurrentTick = h.DayID * 100
+				CurrentTick = int64(h.DayID) * 100
 				localMaxDay = h.DayID // Update cursor for next loop
 			}
 			tx.Commit()

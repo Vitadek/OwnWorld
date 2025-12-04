@@ -10,33 +10,32 @@ import (
 	"time"
 
 	"lukechampine.com/blake3"
-	_ "modernc.org/sqlite"
+	_ "github.com/mattn/go-sqlite3"
 )
 
 func initDB() {
 	os.MkdirAll("./data", 0755)
-
-	// 1. WAL Mode + Busy Timeout
+	
+	// 1. Enable WAL Mode
 	var err error
-	db, err = sql.Open("sqlite", "./data/ownworld.db?_journal_mode=WAL&_busy_timeout=5000")
+	db, err = sql.Open("sqlite3", DBPath+"?_journal_mode=WAL&_busy_timeout=5000")
 	if err != nil { panic(err) }
 
-	// Force WAL just in case
+	// Force WAL
 	db.Exec("PRAGMA journal_mode=WAL;")
 
-	// 2. The V3 Schema
+	// 2. V3 Schema
 	schema := `
 	CREATE TABLE IF NOT EXISTS system_meta (key TEXT PRIMARY KEY, value TEXT);
 
 	CREATE TABLE IF NOT EXISTS users (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		global_uuid TEXT UNIQUE,          -- BLAKE3 Hash of PubKey
+		global_uuid TEXT UNIQUE,
 		username TEXT, 
 		password_hash TEXT, 
 		credits INTEGER DEFAULT 0,
 		is_local BOOLEAN DEFAULT 1,
-		ed25519_pubkey TEXT,
-		ed25519_priv_enc TEXT             -- Encrypted Private Key (New in V3)
+		ed25519_pubkey TEXT
 	);
 
 	CREATE TABLE IF NOT EXISTS solar_systems (
@@ -48,12 +47,15 @@ func initDB() {
 
 	CREATE TABLE IF NOT EXISTS colonies (
 		id INTEGER PRIMARY KEY AUTOINCREMENT, 
-		system_id TEXT, owner_uuid TEXT, name TEXT,
+		system_id TEXT, 
+		owner_uuid TEXT, 
+		name TEXT,
 		pop_laborers INTEGER DEFAULT 100,
 		pop_specialists INTEGER DEFAULT 0,
 		pop_elites INTEGER DEFAULT 0,
 		food INTEGER DEFAULT 1000, water INTEGER DEFAULT 1000,
 		iron INTEGER DEFAULT 0, carbon INTEGER DEFAULT 0, gold INTEGER DEFAULT 0,
+		platinum INTEGER DEFAULT 0, uranium INTEGER DEFAULT 0, diamond INTEGER DEFAULT 0,
 		vegetation INTEGER DEFAULT 0, oxygen INTEGER DEFAULT 1000,
 		fuel INTEGER DEFAULT 0,
 		stability_current REAL DEFAULT 100.0,
@@ -64,14 +66,22 @@ func initDB() {
 
 	CREATE TABLE IF NOT EXISTS fleets (
 		id INTEGER PRIMARY KEY AUTOINCREMENT, 
-		owner_uuid TEXT, status TEXT, 
-		origin_system TEXT, dest_system TEXT,
-		departure_tick INTEGER, arrival_tick INTEGER,
-		ark_ship INTEGER DEFAULT 0, fighters INTEGER DEFAULT 0, 
-		frigates INTEGER DEFAULT 0, haulers INTEGER DEFAULT 0, 
+		owner_uuid TEXT, 
+		status TEXT, 
+		origin_system TEXT,
+		dest_system TEXT,
+		departure_tick INTEGER,
+		arrival_tick INTEGER,
+		ark_ship INTEGER DEFAULT 0,
+		fighters INTEGER DEFAULT 0, 
+		frigates INTEGER DEFAULT 0, 
+		haulers INTEGER DEFAULT 0, 
 		fuel INTEGER DEFAULT 0
 	);
 
+	CREATE TABLE IF NOT EXISTS transaction_log (
+		id INTEGER PRIMARY KEY AUTOINCREMENT, tick INTEGER, action_type TEXT, payload_blob BLOB
+	);
 	CREATE TABLE IF NOT EXISTS daily_snapshots (
 		day_id INTEGER PRIMARY KEY, state_blob BLOB, final_hash TEXT
 	);
@@ -86,16 +96,15 @@ func initIdentity() {
 	err := db.QueryRow("SELECT value FROM system_meta WHERE key='server_uuid'").Scan(&uuid)
 	
 	if err == sql.ErrNoRows {
-		fmt.Println("FIRST BOOT: Generating Galaxy Identity...")
+		InfoLog.Println("🚀 FIRST BOOT: Generating Identity...")
 		
 		pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 		privHex := hex.EncodeToString(priv)
 		pubHex := hex.EncodeToString(pub)
 
-		rndBytes := make([]byte, 8)
-		rand.Read(rndBytes)
+		// Genesis Bind
+		rndBytes := make([]byte, 8); rand.Read(rndBytes)
 		genesisData := fmt.Sprintf("GENESIS-%d-%x", time.Now().UnixNano(), rndBytes)
-		
 		hash := blake3.Sum256([]byte(genesisData))
 		uuid = hex.EncodeToString(hash[:])
 		
@@ -108,19 +117,15 @@ func initIdentity() {
 		
 		PrivateKey = priv
 		PublicKey = pub
-		fmt.Printf("Identity Created: %s\n", uuid)
 	} else {
 		var privHex, pubHex string
 		db.QueryRow("SELECT value FROM system_meta WHERE key='priv_key'").Scan(&privHex)
 		db.QueryRow("SELECT value FROM system_meta WHERE key='pub_key'").Scan(&pubHex)
-		
 		privBytes, _ := hex.DecodeString(privHex)
 		pubBytes, _ := hex.DecodeString(pubHex)
-		
 		PrivateKey = ed25519.PrivateKey(privBytes)
 		PublicKey = ed25519.PublicKey(pubBytes)
+		db.QueryRow("SELECT value FROM system_meta WHERE key='genesis_hash'").Scan(&GenesisHash)
 	}
-	
 	ServerUUID = uuid
-	LeaderUUID = ServerUUID
 }
