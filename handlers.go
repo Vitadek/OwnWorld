@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	mrand "math/rand" 
+	mrand "math/rand"
 	"net/http"
 	"os"
 	"strconv"
@@ -33,13 +33,12 @@ func processImmigration() {
 		db.QueryRow("SELECT value FROM system_meta WHERE key='genesis_hash'").Scan(&myGenHash)
 		if req.GenesisHash != myGenHash { continue }
 
-		// LOGIC UPDATE: Actually add to peer map
+		// LOGIC UPDATE: Actually save peer to memory
 		peerLock.Lock()
 		peers[req.UUID] = &Peer{
 			UUID:      req.UUID,
 			Address:   req.Address,
 			LastSeen:  time.Now(),
-			// PublicKey: ... (In production, parse hex to ed25519.PublicKey)
 		}
 		peerLock.Unlock()
 
@@ -171,11 +170,11 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	
     // 1. Generate Global Identity
     pubKey, privKey, _ := ed25519.GenerateKey(rand.Reader)
-    userUUID := hashBLAKE3(pubKey) // This is the Global ID
+    userUUID := hashBLAKE3(pubKey) // Global ID
     pubKeyStr := hex.EncodeToString(pubKey)
     passHash := hashBLAKE3([]byte(req.Password))
     
-    // Encrypt Private Key so server can act on user's behalf later
+    // Encrypt Private Key (Server Custody)
     privBlob := EncryptKey(privKey, req.Password)
 
 	var count int
@@ -185,7 +184,7 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-    // 2. Insert with Keys
+    // 2. Insert User
 	res, _ := db.Exec(`INSERT INTO users (global_uuid, username, password_hash, is_local, ed25519_pubkey, ed25519_priv_enc) 
                        VALUES (?, ?, ?, 1, ?, ?)`, userUUID, req.Username, passHash, pubKeyStr, privBlob)
 	uid, _ := res.LastInsertId()
@@ -220,8 +219,9 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	db.Exec(`INSERT INTO colonies (system_id, owner_uuid, name, pop_laborers, food, iron, buildings_json) 
 	         VALUES (?, ?, ?, 100, 5000, 1000, ?)`, sysID, userUUID, req.Username+" Prime", startBuilds)
 
-	db.Exec(`INSERT INTO fleets (owner_uuid, status, origin_system, ark_ship, fuel) 
-			 VALUES (?, 'ORBIT', ?, 1, 5000)`, userUUID, sysID)
+    // LOGIC GAP 3 FIXED: Give ARK SHIP (ark_ship=1), NOT Fighter
+	db.Exec(`INSERT INTO fleets (owner_uuid, status, origin_system, ark_ship, fighters, fuel) 
+			 VALUES (?, 'ORBIT', ?, 1, 0, 5000)`, userUUID, sysID)
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status": "registered", 
@@ -404,19 +404,24 @@ func handleFleetLaunch(w http.ResponseWriter, r *http.Request) {
         return
     }
 
-    // 2. Resolve Coordinates
-    // (In Alpha, we query the solar_systems table. In Beta, we ask peers)
+    // --- LOGIC GAP 2 FIXED: PHYSICS ENGINE ---
+
+    // 2. Resolve Origin Coordinates
     var x1, y1, z1 int
     db.QueryRow("SELECT x, y, z FROM solar_systems WHERE id=?", f.OriginSystem).Scan(&x1, &y1, &z1)
     
+    // 3. Resolve Destination Coordinates
     var x2, y2, z2 int
-    // If destination is unknown locally, assume generic far distance for now
     err = db.QueryRow("SELECT x, y, z FROM solar_systems WHERE id=?", req.DestSys).Scan(&x2, &y2, &z2)
     if err != nil {
-        x2, y2, z2 = x1+100, y1+100, z1+100 // Unknown jump
+        // Unknown System (Blind Jump)
+        // In Alpha, we allow blind jumps to valid coord strings if they existed in peer map, 
+        // but for now we default to a "Long Jump" cost.
+        x2, y2, z2 = x1+100, y1+100, z1+100 
     }
 
-    // 3. Calculate Physics
+    // 4. Calculate Distance & Cost
+    // Uses CalculateDistance from utils.go
     dist := CalculateDistance(x1, y1, z1, x2, y2, z2)
     cost := int(dist * 10) // 10 Fuel per Lightyear
 
@@ -425,8 +430,10 @@ func handleFleetLaunch(w http.ResponseWriter, r *http.Request) {
         return
     }
 
-    // 4. Update State
+    // 5. Update State (Launch)
+    // Speed is 1 LY / Tick
     arrival := CurrentTick + int(dist)
+    
     db.Exec(`UPDATE fleets SET status='TRANSIT', fuel=fuel-?, dest_system=?, departure_tick=?, arrival_tick=? 
              WHERE id=?`, cost, req.DestSys, CurrentTick, arrival, req.FleetID)
 
@@ -440,7 +447,6 @@ func handleState(w http.ResponseWriter, r *http.Request) {
         return
     }
 
-    // Determine UUID from ID (Internal mapping)
     var userUUID string
     db.QueryRow("SELECT global_uuid FROM users WHERE id=?", userID).Scan(&userUUID)
 
@@ -450,7 +456,6 @@ func handleState(w http.ResponseWriter, r *http.Request) {
     }
     var resp Response
 
-    // Load Colonies
     rows, _ := db.Query("SELECT id, name, pop_laborers, stability_current, iron, carbon, water, vegetation FROM colonies WHERE owner_uuid=?", userUUID)
     for rows.Next() {
         var c Colony
@@ -459,7 +464,6 @@ func handleState(w http.ResponseWriter, r *http.Request) {
     }
     rows.Close()
 
-    // Load Fleets
     fRows, _ := db.Query("SELECT id, status, origin_system, dest_system, fuel FROM fleets WHERE owner_uuid=?", userUUID)
     for fRows.Next() {
         var f Fleet

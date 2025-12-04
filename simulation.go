@@ -57,7 +57,7 @@ func snapshotWorld() {
     }
 }
 
-// Phase 5.3: Advanced Pop & Stability
+// Phase 5.3: Advanced Pop & Stability (THE ECONOMY ENGINE)
 func tickWorld() {
 	stateLock.Lock()
 	defer stateLock.Unlock()
@@ -91,50 +91,44 @@ func tickWorld() {
 			&c.Food, &c.Water, &c.Carbon, &c.Gold, &c.Fuel, &c.StabilityCurrent, &c.StabilityTarget)
 		json.Unmarshal([]byte(bJson), &c.Buildings)
 
-		// --- ECONOMY ENGINE v2 ---
-		
-		// 1. Consumption
-		// Laborers: 1 Food
-		// Specialists: 2 Food + 1 Carbon (Consumer Goods)
-		// Elites: 5 Food + 1 Gold (Luxury)
-		neededFood := (c.PopLaborers * 1) + (c.PopSpecialists * 2) + (c.PopElites * 5)
-		neededCarbon := c.PopSpecialists * 1
-		neededGold := c.PopElites * 1
+		// --- LOGIC GAP 1 FIXED: SCARCITY & EFFICIENCY ---
 
-		// Apply Consumption
-		if c.Food >= neededFood { c.Food -= neededFood } else {
-			c.StabilityTarget -= 5.0
-			// Starvation Death (5%)
+		// A. EFFICIENCY
+		// Hash the Planet ID to get its unique multipliers
+		foodEff := GetEfficiency(c.ID, "food") 
+		ironEff := GetEfficiency(c.ID, "iron")
+
+		// B. PRODUCTION (Weighted by Efficiency)
+		// 1 Farm = 5 Food * Efficiency
+		c.Food += int(float64(c.Buildings["farm"] * 5) * foodEff)
+		// 1 Mine = 5 Iron * Efficiency
+		c.Iron += int(float64(c.Buildings["iron_mine"] * 5) * ironEff)
+		// Specialists produce processed goods (Carbon)
+		c.Carbon += int(float64(c.PopSpecialists) * 0.5)
+
+		// C. CONSUMPTION (The Drain)
+		// Laborers need 1 Food. Specialists need 2 Food.
+		foodConsumption := (c.PopLaborers * 1) + (c.PopSpecialists * 2)
+		
+		if c.Food >= foodConsumption {
+			c.Food -= foodConsumption
+			c.StabilityTarget += 0.5 // Well fed
+		} else {
+			// STARVATION LOGIC
+			c.Food = 0
+			c.StabilityTarget -= 5.0 // Riots
+			// 5% Death Rate per tick
 			c.PopLaborers = int(float64(c.PopLaborers) * 0.95)
+			c.PopSpecialists = int(float64(c.PopSpecialists) * 0.95)
 		}
 
-		if c.Carbon >= neededCarbon { c.Carbon -= neededCarbon } else {
-			// Specialists downgrade to Laborers if unhappy
-			if c.PopSpecialists > 0 {
-				c.PopSpecialists--
-				c.PopLaborers++
-			}
+		// D. STABILITY DRIFT
+		if c.StabilityCurrent < c.StabilityTarget {
+			c.StabilityCurrent += 0.1
+		} else if c.StabilityCurrent > c.StabilityTarget {
+			c.StabilityCurrent -= 0.1
 		}
-
-		if c.Gold >= neededGold { c.Gold -= neededGold } // Elites just complain (Stability hit)
-
-		// 2. Production
-		// Multipliers based on Class ratios
-		effLab := float64(c.PopLaborers) / 100.0
-		// effSpec := float64(c.PopSpecialists) / 10.0
-
-		// Basic Resources
-		c.Food += int(float64(c.Buildings["farm"] * 10) * effLab)
-		c.Water += int(float64(c.Buildings["well"] * 10) * effLab)
-		
-		// Mining (Depends on Planet Efficiency)
-		sysHash := c.ID // Simplified planet ID usage
-		c.Iron += int(float64(c.Buildings["iron_mine"] * 5) * effLab * GetEfficiency(sysHash, "iron"))
-		
-		// Stability Drift
-		diff := c.StabilityTarget - c.StabilityCurrent
-		c.StabilityCurrent += diff * 0.1
-		c.StabilityTarget = 100.0 // Reset baseline
+		c.StabilityTarget = 100.0 // Reset baseline for next tick
 
 		updates = append(updates, ColUpdate{
 			ID: c.ID, Food: c.Food, Water: c.Water, Carbon: c.Carbon, Gold: c.Gold, Fuel: c.Fuel,
@@ -158,16 +152,14 @@ func tickWorld() {
 	recalculateLeader()
 }
 
-// Phase 4: Time Lord Loop (Updated for V3.1)
 func runGameLoop() {
-	InfoLog.Println("Starting Galaxy Engine (V3.1 Time Lord Mode)...")
+	InfoLog.Println("Starting Galaxy Engine (V4.0 Final)...")
 	
 	for {
 		// 1. Calculate Offset based on Election/Rank
 		offset := CalculateOffset()
 		
 		// 2. Determine Target Time (Global 5s Grid)
-		// We align to the nearest 5-second mark (Unix Epoch)
 		now := time.Now().UnixMilli()
 		target := ((now / 5000) * 5000) + 5000 + offset.Milliseconds()
 		
