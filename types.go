@@ -82,6 +82,7 @@ type Fleet struct {
 	ArkShip    int `json:"ark_ship"`
 	Fighters   int `json:"fighters"`
 	Frigates   int `json:"frigates"`
+	Haulers    int `json:"haulers"`
 }
 type HeartbeatRequest struct {
 	UUID      string `json:"uuid"`

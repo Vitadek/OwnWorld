@@ -1,8 +1,8 @@
 package main
 
 import (
-	"crypto/ed25519"
 	"bytes"
+	"crypto/ed25519"
 	"database/sql"
 	"log"
 	"sync"
@@ -27,6 +27,7 @@ var (
 
 	// Identity
 	ServerUUID  string
+	ServerLoc   []int // [x, y, z] <--- ADDED THIS
 	GenesisHash string
 	PrivateKey  ed25519.PrivateKey
 	PublicKey   ed25519.PublicKey
@@ -55,26 +56,21 @@ var (
 	mapSnapshot      atomic.Value 
 	immigrationQueue = make(chan HandshakeRequest, 50)
 	
-	// Locking
-	stateLock sync.Mutex // Added this (Fixes simulation.go error)
+	// Buffers
+	bufferPool = sync.Pool{
+		New: func() interface{} { return new(bytes.Buffer) },
+	}
 	
 	// Rate Limiting
 	ipLimiters = make(map[string]*rate.Limiter)
 	ipLock     sync.Mutex
-
-	bufferPool = sync.Pool{
-        New: func() interface{} {
-            return new(bytes.Buffer)
-        },
-    }
 )
 
-// --- Game Constants ---
+// Game Constants
 var UnitCosts = map[string]map[string]int{
 	"ark_ship": {"iron": 5000, "food": 5000, "fuel": 500, "pop_laborers": 100},
 	"fighter":  {"iron": 500, "fuel": 50, "pop_laborers": 1},
 	"frigate":  {"iron": 2000, "carbon": 500, "gold": 50, "pop_specialists": 5},
-	"scout":    {"iron": 100, "fuel": 50},
 }
 
 var BuildingCosts = map[string]map[string]int{

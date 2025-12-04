@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	mrand "math/rand"
 	"net/http"
 	"os"
@@ -15,7 +16,6 @@ import (
 	"time"
 
 	pb "ownworld/pkg/federation"
-
 	"google.golang.org/protobuf/proto"
 )
 
@@ -23,9 +23,7 @@ import (
 
 func processImmigration() {
 	for req := range immigrationQueue {
-		// Throttling to prevent CPU exhaustion from rapid handshakes
 		time.Sleep(2 * time.Second)
-
 		if Config.PeeringMode == "strict" {
 			continue
 		}
@@ -37,7 +35,6 @@ func processImmigration() {
 			continue
 		}
 
-		// Genesis Hash Check (Anti-Multiverse)
 		var myGenHash string
 		db.QueryRow("SELECT value FROM system_meta WHERE key='genesis_hash'").Scan(&myGenHash)
 		if req.GenesisHash != myGenHash {
@@ -46,7 +43,6 @@ func processImmigration() {
 
 		InfoLog.Printf("IMMIGRATION: Peer %s joined.", req.UUID)
 
-		// Parse their public key
 		pubKeyBytes, err := hex.DecodeString(req.PublicKey)
 		if err != nil || len(pubKeyBytes) != ed25519.PublicKeySize {
 			continue
@@ -58,7 +54,7 @@ func processImmigration() {
 			PublicKey:   ed25519.PublicKey(pubKeyBytes),
 			GenesisHash: req.GenesisHash,
 			LastSeen:    time.Now(),
-			Relation:    0, // Neutral by default
+			Relation:    0,
 		}
 
 		peerLock.Lock()
@@ -70,8 +66,6 @@ func processImmigration() {
 }
 
 func handleHandshake(w http.ResponseWriter, r *http.Request) {
-	// Handshake is the ONE exception that still uses JSON/LZ4 because it happens
-	// before we have established a Protobuf contract or keys.
 	body, _ := io.ReadAll(r.Body)
 	decompressed := decompressLZ4(body)
 	var req HandshakeRequest
@@ -79,12 +73,11 @@ func handleHandshake(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Bad Request", 400)
 		return
 	}
-
-	// Send Response immediately (Status + Location)
+	
 	resp := HandshakeResponse{
 		Status:   "Queued",
 		UUID:     ServerUUID,
-		Location: ServerLoc, // Sharing Location for Cluster Spawning
+		Location: ServerLoc, // defined in globals.go
 	}
 
 	select {
@@ -98,13 +91,11 @@ func handleHandshake(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleFederationTransaction(w http.ResponseWriter, r *http.Request) {
-	// 1. Verify Content-Type
 	if r.Header.Get("Content-Type") != "application/x-protobuf" {
 		http.Error(w, "Protobuf Required", 415)
 		return
 	}
 
-	// 2. Early Rejection: Check UUID Header before decompressing (CPU Defense)
 	senderUUID := r.Header.Get("X-Server-UUID")
 	if senderUUID == "" {
 		http.Error(w, "Missing UUID Header", 401)
@@ -116,12 +107,10 @@ func handleFederationTransaction(w http.ResponseWriter, r *http.Request) {
 	peerLock.RUnlock()
 
 	if !known {
-		// We only accept transactions from known peers (after Handshake)
 		http.Error(w, "Unknown Peer", 403)
 		return
 	}
 
-	// 3. Read & Decompress
 	body, _ := io.ReadAll(r.Body)
 	decompressed := decompressLZ4(body)
 
@@ -132,21 +121,14 @@ func handleFederationTransaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 4. Verify Signature (Production Logic)
-	// We must reconstruct the signed message exactly as the sender created it.
-	// For Heartbeats: "UUID:Tick"
-	// For Fleets/Market: The payload bytes themselves are signed.
-
 	var isValidSig bool
 
 	switch msg := packet.Content.(type) {
 	case *pb.Packet_Heartbeat:
-		// Reconstruct the signed message string for Heartbeats
 		signedMsg := fmt.Sprintf("%s:%d", packet.SenderUuid, msg.Heartbeat.Tick)
 		isValidSig = VerifySignature(peer.PublicKey, []byte(signedMsg), packet.Signature)
 
 		if isValidSig {
-			// Update Peer State
 			peerLock.Lock()
 			if p, ok := Peers[packet.SenderUuid]; ok {
 				p.LastTick = msg.Heartbeat.Tick
@@ -154,25 +136,19 @@ func handleFederationTransaction(w http.ResponseWriter, r *http.Request) {
 				p.LastSeen = time.Now()
 			}
 			peerLock.Unlock()
-
-			// Sync Check
+			
 			if packet.SenderUuid == LeaderUUID {
 				syncClock(msg.Heartbeat.Tick)
 			}
 		}
 
 	case *pb.Packet_FleetMove:
-		// For Fleet Moves, the signature covers the compressed fleet data blob
 		isValidSig = VerifySignature(peer.PublicKey, msg.FleetMove.CompressedFleetData, packet.Signature)
 
 		if isValidSig {
-			InfoLog.Printf("Fleet Arrived from %s (Origin: %s)", packet.SenderUuid, msg.FleetMove.OriginSystem)
-
-			// Parse the fleet payload
+			InfoLog.Printf("Fleet Arrived from %s", packet.SenderUuid)
 			var f Fleet
-			// Note: We unmarshal the JSON inside the proto bytes
 			if err := json.Unmarshal(msg.FleetMove.CompressedFleetData, &f); err == nil {
-				// Insert into our DB as "ORBIT" status
 				db.Exec(`INSERT INTO fleets (owner_uuid, status, origin_system, dest_system, 
 				         ark_ship, fighters, frigates, haulers, fuel) 
 				         VALUES (?, 'ORBIT', ?, ?, ?, ?, ?, ?, ?)`,
@@ -182,8 +158,6 @@ func handleFederationTransaction(w http.ResponseWriter, r *http.Request) {
 		}
 
 	case *pb.Packet_MarketOrder:
-		// For Market Orders, assume signature covers a canonical string of the order details
-		// Format: "ORDER:ID:ITEM:PRICE:QTY"
 		orderMsg := fmt.Sprintf("ORDER:%s:%s:%d:%d",
 			msg.MarketOrder.OrderId, msg.MarketOrder.Item,
 			msg.MarketOrder.Price, msg.MarketOrder.Quantity)
@@ -219,7 +193,6 @@ func handleMap(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleSyncLedger(w http.ResponseWriter, r *http.Request) {
-	// Admin/Debug Endpoint - Protected by Key
 	if r.Header.Get("X-Fed-Key") != os.Getenv("FEDERATION_KEY") {
 		http.Error(w, "Unauthorized", 401)
 		return
@@ -227,12 +200,8 @@ func handleSyncLedger(w http.ResponseWriter, r *http.Request) {
 
 	sinceDay, _ := strconv.Atoi(r.URL.Query().Get("since_day"))
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	if limit <= 0 {
-		limit = 50
-	}
-	if limit > 100 {
-		limit = 100
-	}
+	if limit <= 0 { limit = 50 }
+	if limit > 100 { limit = 100 }
 
 	rows, err := db.Query(`SELECT day_id, state_blob, final_hash 
 	                       FROM daily_snapshots 
@@ -264,7 +233,7 @@ func handleSyncLedger(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(history)
 }
 
-// --- Client Handlers (Human / UI) ---
+// --- Client Handlers ---
 
 func handleRegister(w http.ResponseWriter, r *http.Request) {
 	var req struct{ Username, Password string }
@@ -273,14 +242,12 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1. Generate Identity (Global UUID)
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	userUUID := hashBLAKE3(pub)
 	pubHex := hex.EncodeToString(pub)
 	privEnc := encryptKey(priv, req.Password)
 	passHash := hashBLAKE3([]byte(req.Password))
 
-	// 2. Insert User
 	_, err := db.Exec(`INSERT INTO users (global_uuid, username, password_hash, is_local, ed25519_pubkey, ed25519_priv_enc) 
 	                   VALUES (?, ?, ?, 1, ?, ?)`, userUUID, req.Username, passHash, pubHex, privEnc)
 
@@ -289,26 +256,24 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3. Goldilocks Search (Cluster Spawning)
 	mrand.Seed(time.Now().UnixNano())
 	var sysID string
 	found := false
 	
 	var sysX, sysY, sysZ int
 
+	// Goldilocks Search with Cluster Spawning
 	for i := 0; i < 50; i++ {
-		// Anchor to ServerLoc (The Cluster), but add noise
 		uuidBytes, _ := hex.DecodeString(userUUID)
-		// Use random offset to spread out users in the cluster
 		offsetX := mrand.Intn(40) - 20
 		offsetY := mrand.Intn(40) - 20
 		offsetZ := mrand.Intn(40) - 20
 
+		// ServerLoc is defined in globals.go
 		sysX = ServerLoc[0] + offsetX
 		sysY = ServerLoc[1] + offsetY
 		sysZ = ServerLoc[2] + offsetZ
 		
-		// Check Efficiency
 		tempID := (sysX * 10000) + (sysY * 100) + sysZ
 		if tempID < 0 { tempID = -tempID }
 		
@@ -319,27 +284,23 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !found {
-		// Fallback: Just spawn at server center
 		sysID = fmt.Sprintf("sys-%d-%d-%d", ServerLoc[0], ServerLoc[1], ServerLoc[2])
 		sysX, sysY, sysZ = ServerLoc[0], ServerLoc[1], ServerLoc[2]
 	}
 
-	// 4. Create System
 	db.Exec("INSERT OR IGNORE INTO solar_systems (id, x, y, z, star_type, owner_uuid) VALUES (?, ?, ?, ?, 'G2V', ?)", 
 		sysID, sysX, sysY, sysZ, ServerUUID)
 
-	// 5. Create Homestead (Colony)
-	// Gives them a base to produce food/iron
 	startBuilds := `{"farm": 5, "iron_mine": 5, "urban_housing": 10}`
 	db.Exec(`INSERT INTO colonies (system_id, owner_uuid, name, pop_laborers, food, iron, buildings_json) 
 	         VALUES (?, ?, ?, 100, 2000, 1000, ?)`, sysID, userUUID, req.Username+" Prime", startBuilds)
 
-	// 6. Create Ark Ship (Expansion Tool)
+	// Ark Ship Spawn (Corrected to include Haulers if needed, but Ark is special)
 	db.Exec(`INSERT INTO fleets (owner_uuid, status, origin_system, ark_ship, fuel) 
 			 VALUES (?, 'ORBIT', ?, 1, 2000)`, userUUID, sysID)
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":    "registered",
+		"status":    "registered", 
 		"user_uuid": userUUID,
 		"system_id": sysID,
 		"location":  []int{sysX, sysY, sysZ},
@@ -354,7 +315,6 @@ func handleFleetLaunch(w http.ResponseWriter, r *http.Request) {
 	}
 	json.NewDecoder(r.Body).Decode(&req)
 
-	// 1. Fetch Fleet
 	var f Fleet
 	var currentSys string
 	err := db.QueryRow("SELECT owner_uuid, origin_system, fuel, status FROM fleets WHERE id=?", req.FleetID).Scan(&f.OwnerUUID, &currentSys, &f.Fuel, &f.Status)
@@ -368,14 +328,12 @@ func handleFleetLaunch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Physics (Distance & Fuel)
 	originCoords := GetSystemCoords(currentSys)
 	targetCoords := GetSystemCoords(req.TargetSystem)
 	
 	var targetOwner string
 	db.QueryRow("SELECT owner_uuid FROM solar_systems WHERE id=?", req.TargetSystem).Scan(&targetOwner)
 	
-	// Check Peer Status via helper
 	cost := CalculateFuelCost(originCoords, targetCoords, 1000, targetOwner)
 	
 	if f.Fuel < cost {
@@ -383,14 +341,12 @@ func handleFleetLaunch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3. Calculate Arrival
 	dist := 0.0
 	for i := 0; i < 3; i++ { dist += math.Pow(float64(originCoords[i]-targetCoords[i]), 2) }
 	distance := math.Sqrt(dist)
 	
 	arrivalTick := atomic.LoadInt64(&CurrentTick) + int64(distance)
 
-	// 4. Launch
 	db.Exec(`UPDATE fleets SET status='TRANSIT', fuel=fuel-?, dest_system=?, 
 	         departure_tick=?, arrival_tick=? WHERE id=?`, 
 	         cost, req.TargetSystem, atomic.LoadInt64(&CurrentTick), arrivalTick, req.FleetID)
@@ -442,7 +398,6 @@ func handleConstruct(w http.ResponseWriter, r *http.Request) {
 	stateLock.Lock()
 	defer stateLock.Unlock()
 
-	// Fetch Resources & Shipyard
 	var c Colony
 	var bJson string
 	err := db.QueryRow(`SELECT buildings_json, system_id, owner_uuid, iron, food, fuel, carbon, gold, pop_laborers 
@@ -456,7 +411,6 @@ func handleConstruct(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Shipyard Required", 400); return
 	}
 
-	// Check Costs
 	if c.Iron < costs["iron"]*req.Amount || 
 	   c.Food < costs["food"]*req.Amount || 
 	   c.Fuel < costs["fuel"]*req.Amount || 
@@ -466,16 +420,18 @@ func handleConstruct(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Insufficient Resources", 402); return
 	}
 
-	// Deduct & Build
 	db.Exec(`UPDATE colonies SET iron=iron-?, food=food-?, fuel=fuel-?, carbon=carbon-?, gold=gold-?, pop_laborers=pop_laborers-? WHERE id=?`,
 		costs["iron"]*req.Amount, costs["food"]*req.Amount, costs["fuel"]*req.Amount, 
 		costs["carbon"]*req.Amount, costs["gold"]*req.Amount, costs["pop_laborers"]*req.Amount, 
 		req.ColonyID)
 
-	// Spawn Fleet
+	arkCount := 0
+	if req.Unit == "ark_ship" { arkCount = req.Amount }
+	
+	// Only insert new fleet if not adding to existing (Simplified: Always new fleet for now)
 	db.Exec(`INSERT INTO fleets (owner_uuid, status, fuel, origin_system, dest_system, ark_ship) 
 			 VALUES (?, 'ORBIT', ?, ?, ?, ?)`,
-		c.OwnerUUID, 1000, c.SystemID, c.SystemID, req.Amount)
+		c.OwnerUUID, 1000, c.SystemID, c.SystemID, arkCount)
 
 	w.Write([]byte("Construction Complete"))
 }
@@ -530,7 +486,6 @@ func handleDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if system is already claimed
 	var colonyCount int
 	db.QueryRow("SELECT count(*) FROM colonies WHERE system_id=?", sysID).Scan(&colonyCount)
 	if colonyCount > 0 {
@@ -540,7 +495,7 @@ func handleDeploy(w http.ResponseWriter, r *http.Request) {
 
 	bJson, _ := json.Marshal(map[string]int{"farm": 5, "well": 5, "urban_housing": 10})
 	_, err = db.Exec(`INSERT INTO colonies (system_id, owner_uuid, name, buildings_json, pop_laborers, water, food, iron) 
-	         VALUES (?, ?, ?, ?, 100, 5000, 5000, 500)`, sysID, owner, req.Name, string(bJson))
+	         VALUES (?, ?, ?, ?, 1000, 5000, 5000, 500)`, sysID, owner, req.Name, string(bJson))
 
 	if err == nil {
 		db.Exec("DELETE FROM fleets WHERE id=?", req.FleetID)

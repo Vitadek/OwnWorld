@@ -21,16 +21,16 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// The "Envelope" for all federation messages
 type Packet struct {
 	state      protoimpl.MessageState `protogen:"open.v1"`
 	SenderUuid string                 `protobuf:"bytes,1,opt,name=sender_uuid,json=senderUuid,proto3" json:"sender_uuid,omitempty"`
-	Signature  []byte                 `protobuf:"bytes,2,opt,name=signature,proto3" json:"signature,omitempty"` // Ed25519
+	Signature  []byte                 `protobuf:"bytes,2,opt,name=signature,proto3" json:"signature,omitempty"`
 	// Types that are valid to be assigned to Content:
 	//
 	//	*Packet_Heartbeat
 	//	*Packet_FleetMove
 	//	*Packet_Handshake
+	//	*Packet_MarketOrder
 	Content       isPacket_Content `protobuf_oneof:"content"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -114,6 +114,15 @@ func (x *Packet) GetHandshake() *Handshake {
 	return nil
 }
 
+func (x *Packet) GetMarketOrder() *MarketOrder {
+	if x != nil {
+		if x, ok := x.Content.(*Packet_MarketOrder); ok {
+			return x.MarketOrder
+		}
+	}
+	return nil
+}
+
 type isPacket_Content interface {
 	isPacket_Content()
 }
@@ -130,11 +139,17 @@ type Packet_Handshake struct {
 	Handshake *Handshake `protobuf:"bytes,5,opt,name=handshake,proto3,oneof"`
 }
 
+type Packet_MarketOrder struct {
+	MarketOrder *MarketOrder `protobuf:"bytes,6,opt,name=market_order,json=marketOrder,proto3,oneof"`
+}
+
 func (*Packet_Heartbeat) isPacket_Content() {}
 
 func (*Packet_FleetMove) isPacket_Content() {}
 
 func (*Packet_Handshake) isPacket_Content() {}
+
+func (*Packet_MarketOrder) isPacket_Content() {}
 
 type Heartbeat struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -197,15 +212,14 @@ func (x *Heartbeat) GetGenesisHash() string {
 }
 
 type FleetMove struct {
-	state        protoimpl.MessageState `protogen:"open.v1"`
-	FleetId      int32                  `protobuf:"varint,1,opt,name=fleet_id,json=fleetId,proto3" json:"fleet_id,omitempty"`
-	OriginSystem string                 `protobuf:"bytes,2,opt,name=origin_system,json=originSystem,proto3" json:"origin_system,omitempty"`
-	DestSystem   string                 `protobuf:"bytes,3,opt,name=dest_system,json=destSystem,proto3" json:"dest_system,omitempty"`
-	ArrivalTick  int64                  `protobuf:"varint,4,opt,name=arrival_tick,json=arrivalTick,proto3" json:"arrival_tick,omitempty"`
-	// Compressed JSON of the fleet composition (Fighters, Ark, Cargo)
-	FleetPayload  []byte `protobuf:"bytes,5,opt,name=fleet_payload,json=fleetPayload,proto3" json:"fleet_payload,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state               protoimpl.MessageState `protogen:"open.v1"`
+	FleetId             int32                  `protobuf:"varint,1,opt,name=fleet_id,json=fleetId,proto3" json:"fleet_id,omitempty"`
+	OriginSystem        string                 `protobuf:"bytes,2,opt,name=origin_system,json=originSystem,proto3" json:"origin_system,omitempty"`
+	DestSystem          string                 `protobuf:"bytes,3,opt,name=dest_system,json=destSystem,proto3" json:"dest_system,omitempty"`
+	ArrivalTick         int64                  `protobuf:"varint,4,opt,name=arrival_tick,json=arrivalTick,proto3" json:"arrival_tick,omitempty"`
+	CompressedFleetData []byte                 `protobuf:"bytes,5,opt,name=compressed_fleet_data,json=compressedFleetData,proto3" json:"compressed_fleet_data,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *FleetMove) Reset() {
@@ -266,9 +280,9 @@ func (x *FleetMove) GetArrivalTick() int64 {
 	return 0
 }
 
-func (x *FleetMove) GetFleetPayload() []byte {
+func (x *FleetMove) GetCompressedFleetData() []byte {
 	if x != nil {
-		return x.FleetPayload
+		return x.CompressedFleetData
 	}
 	return nil
 }
@@ -333,12 +347,96 @@ func (x *Handshake) GetGenesisHash() string {
 	return ""
 }
 
+type MarketOrder struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	OrderId       string                 `protobuf:"bytes,1,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
+	Item          string                 `protobuf:"bytes,2,opt,name=item,proto3" json:"item,omitempty"`
+	Price         int32                  `protobuf:"varint,3,opt,name=price,proto3" json:"price,omitempty"`
+	Quantity      int32                  `protobuf:"varint,4,opt,name=quantity,proto3" json:"quantity,omitempty"`
+	IsBuy         bool                   `protobuf:"varint,5,opt,name=is_buy,json=isBuy,proto3" json:"is_buy,omitempty"`
+	SellerUuid    string                 `protobuf:"bytes,6,opt,name=seller_uuid,json=sellerUuid,proto3" json:"seller_uuid,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MarketOrder) Reset() {
+	*x = MarketOrder{}
+	mi := &file_proto_federation_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MarketOrder) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MarketOrder) ProtoMessage() {}
+
+func (x *MarketOrder) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_federation_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MarketOrder.ProtoReflect.Descriptor instead.
+func (*MarketOrder) Descriptor() ([]byte, []int) {
+	return file_proto_federation_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *MarketOrder) GetOrderId() string {
+	if x != nil {
+		return x.OrderId
+	}
+	return ""
+}
+
+func (x *MarketOrder) GetItem() string {
+	if x != nil {
+		return x.Item
+	}
+	return ""
+}
+
+func (x *MarketOrder) GetPrice() int32 {
+	if x != nil {
+		return x.Price
+	}
+	return 0
+}
+
+func (x *MarketOrder) GetQuantity() int32 {
+	if x != nil {
+		return x.Quantity
+	}
+	return 0
+}
+
+func (x *MarketOrder) GetIsBuy() bool {
+	if x != nil {
+		return x.IsBuy
+	}
+	return false
+}
+
+func (x *MarketOrder) GetSellerUuid() string {
+	if x != nil {
+		return x.SellerUuid
+	}
+	return ""
+}
+
 var File_proto_federation_proto protoreflect.FileDescriptor
 
 const file_proto_federation_proto_rawDesc = "" +
 	"\n" +
 	"\x16proto/federation.proto\x12\n" +
-	"federation\"\xf8\x01\n" +
+	"federation\"\xb6\x02\n" +
 	"\x06Packet\x12\x1f\n" +
 	"\vsender_uuid\x18\x01 \x01(\tR\n" +
 	"senderUuid\x12\x1c\n" +
@@ -346,25 +444,34 @@ const file_proto_federation_proto_rawDesc = "" +
 	"\theartbeat\x18\x03 \x01(\v2\x15.federation.HeartbeatH\x00R\theartbeat\x126\n" +
 	"\n" +
 	"fleet_move\x18\x04 \x01(\v2\x15.federation.FleetMoveH\x00R\tfleetMove\x125\n" +
-	"\thandshake\x18\x05 \x01(\v2\x15.federation.HandshakeH\x00R\thandshakeB\t\n" +
+	"\thandshake\x18\x05 \x01(\v2\x15.federation.HandshakeH\x00R\thandshake\x12<\n" +
+	"\fmarket_order\x18\x06 \x01(\v2\x17.federation.MarketOrderH\x00R\vmarketOrderB\t\n" +
 	"\acontent\"a\n" +
 	"\tHeartbeat\x12\x12\n" +
 	"\x04tick\x18\x01 \x01(\x03R\x04tick\x12\x1d\n" +
 	"\n" +
 	"peer_count\x18\x02 \x01(\x05R\tpeerCount\x12!\n" +
-	"\fgenesis_hash\x18\x03 \x01(\tR\vgenesisHash\"\xb4\x01\n" +
+	"\fgenesis_hash\x18\x03 \x01(\tR\vgenesisHash\"\xc3\x01\n" +
 	"\tFleetMove\x12\x19\n" +
 	"\bfleet_id\x18\x01 \x01(\x05R\afleetId\x12#\n" +
 	"\rorigin_system\x18\x02 \x01(\tR\foriginSystem\x12\x1f\n" +
 	"\vdest_system\x18\x03 \x01(\tR\n" +
 	"destSystem\x12!\n" +
-	"\farrival_tick\x18\x04 \x01(\x03R\varrivalTick\x12#\n" +
-	"\rfleet_payload\x18\x05 \x01(\fR\ffleetPayload\"g\n" +
+	"\farrival_tick\x18\x04 \x01(\x03R\varrivalTick\x122\n" +
+	"\x15compressed_fleet_data\x18\x05 \x01(\fR\x13compressedFleetData\"g\n" +
 	"\tHandshake\x12\x1d\n" +
 	"\n" +
 	"public_key\x18\x01 \x01(\tR\tpublicKey\x12\x18\n" +
 	"\aaddress\x18\x02 \x01(\tR\aaddress\x12!\n" +
-	"\fgenesis_hash\x18\x03 \x01(\tR\vgenesisHashB\x12Z\x10./pkg/federationb\x06proto3"
+	"\fgenesis_hash\x18\x03 \x01(\tR\vgenesisHash\"\xa6\x01\n" +
+	"\vMarketOrder\x12\x19\n" +
+	"\border_id\x18\x01 \x01(\tR\aorderId\x12\x12\n" +
+	"\x04item\x18\x02 \x01(\tR\x04item\x12\x14\n" +
+	"\x05price\x18\x03 \x01(\x05R\x05price\x12\x1a\n" +
+	"\bquantity\x18\x04 \x01(\x05R\bquantity\x12\x15\n" +
+	"\x06is_buy\x18\x05 \x01(\bR\x05isBuy\x12\x1f\n" +
+	"\vseller_uuid\x18\x06 \x01(\tR\n" +
+	"sellerUuidB\x12Z\x10./pkg/federationb\x06proto3"
 
 var (
 	file_proto_federation_proto_rawDescOnce sync.Once
@@ -378,22 +485,24 @@ func file_proto_federation_proto_rawDescGZIP() []byte {
 	return file_proto_federation_proto_rawDescData
 }
 
-var file_proto_federation_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_proto_federation_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
 var file_proto_federation_proto_goTypes = []any{
-	(*Packet)(nil),    // 0: federation.Packet
-	(*Heartbeat)(nil), // 1: federation.Heartbeat
-	(*FleetMove)(nil), // 2: federation.FleetMove
-	(*Handshake)(nil), // 3: federation.Handshake
+	(*Packet)(nil),      // 0: federation.Packet
+	(*Heartbeat)(nil),   // 1: federation.Heartbeat
+	(*FleetMove)(nil),   // 2: federation.FleetMove
+	(*Handshake)(nil),   // 3: federation.Handshake
+	(*MarketOrder)(nil), // 4: federation.MarketOrder
 }
 var file_proto_federation_proto_depIdxs = []int32{
 	1, // 0: federation.Packet.heartbeat:type_name -> federation.Heartbeat
 	2, // 1: federation.Packet.fleet_move:type_name -> federation.FleetMove
 	3, // 2: federation.Packet.handshake:type_name -> federation.Handshake
-	3, // [3:3] is the sub-list for method output_type
-	3, // [3:3] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	4, // 3: federation.Packet.market_order:type_name -> federation.MarketOrder
+	4, // [4:4] is the sub-list for method output_type
+	4, // [4:4] is the sub-list for method input_type
+	4, // [4:4] is the sub-list for extension type_name
+	4, // [4:4] is the sub-list for extension extendee
+	0, // [0:4] is the sub-list for field type_name
 }
 
 func init() { file_proto_federation_proto_init() }
@@ -405,6 +514,7 @@ func file_proto_federation_proto_init() {
 		(*Packet_Heartbeat)(nil),
 		(*Packet_FleetMove)(nil),
 		(*Packet_Handshake)(nil),
+		(*Packet_MarketOrder)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -412,7 +522,7 @@ func file_proto_federation_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_federation_proto_rawDesc), len(file_proto_federation_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   4,
+			NumMessages:   5,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
