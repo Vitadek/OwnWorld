@@ -72,20 +72,23 @@ var (
 	ipLimiters = make(map[string]*rate.Limiter)
 	ipLock     sync.Mutex
 
-	// FIX B: Replay Attack Protection
-	// We store the hash of valid signatures seen in the current tick window.
-	SeenTransactions = make(map[string]bool)
-	SeenTxLock       sync.Mutex
+	// FIX J: Replay Attack Protection (Double Buffering)
+	// We keep two buffers: Current Tick and Previous Tick.
+	// This covers the race condition where a transaction arrives just after a cache clear 
+	// but is still valid within the handlers logic window.
+	SeenCurrent  = make(map[string]bool)
+	SeenPrevious = make(map[string]bool)
+	SeenTxLock   sync.Mutex
 )
 
-// FIX B: Prune Cache Helper
-// Called by simulation.go -> tickWorld() to clear memory every tick
+// FIX J: Prune Cache Helper (Double Buffer Rotation)
+// Called by simulation.go -> tickWorld() to rotate memory every tick
 func pruneTransactionCache() {
 	SeenTxLock.Lock()
 	defer SeenTxLock.Unlock()
-	// Re-allocate map to clear it.
-	// In a high-perf scenario, we might use a ring buffer, but this is safe for now.
-	SeenTransactions = make(map[string]bool) 
+	// Rotate: Current becomes Previous, discarding old Previous.
+	SeenPrevious = SeenCurrent
+	SeenCurrent = make(map[string]bool)
 }
 
 // Game Constants

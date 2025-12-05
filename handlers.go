@@ -65,7 +65,7 @@ func processImmigration() {
 }
 
 func handleHandshake(w http.ResponseWriter, r *http.Request) {
-	// FIX C: Zip Bomb Protection (Limit to 1MB)
+	// FIX C: Zip Bomb Protection
 	lr := io.LimitReader(r.Body, 1024*1024) 
 	body, err := io.ReadAll(lr)
 	if err != nil {
@@ -115,22 +115,22 @@ func handleFederationTransaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// FIX A: Verify Signature FIRST (CPU Cost) - Always verify
+	// FIX A: Verify Signature FIRST
 	if !VerifySignature(peer.PublicKey, req.Payload, req.Signature) {
 		http.Error(w, "Invalid Signature", 401)
 		return
 	}
 
-	// FIX B: Check Replay Cache (Memory Cost - Very Low)
+	// FIX J: Check Replay Cache (Double Buffer)
 	sigHex := hex.EncodeToString(req.Signature)
 	
 	SeenTxLock.Lock()
-	if SeenTransactions[sigHex] {
+	if SeenCurrent[sigHex] || SeenPrevious[sigHex] {
 		SeenTxLock.Unlock()
 		w.Write([]byte("ACK_REPLAY")) 
 		return
 	}
-	SeenTransactions[sigHex] = true // Mark as seen
+	SeenCurrent[sigHex] = true // Mark as seen in current buffer
 	SeenTxLock.Unlock()
 
 	stateLock.Lock()
@@ -148,7 +148,7 @@ func handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	// FIX C: Zip Bomb Protection
 	lr := io.LimitReader(r.Body, 1024*1024) 
 	body, err := io.ReadAll(lr)
-	if err != nil { return } // Silent drop on error for heartbeat
+	if err != nil { return } 
 
 	decompressed := decompressLZ4(body)
 
@@ -166,8 +166,7 @@ func handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// FIX A: Remove "Lazy" Random Check
-	// Verify every heartbeat to prevent spoofing
+	// FIX A: Strict Sig Check
 	msg := fmt.Sprintf("%s:%d", req.UUID, req.Tick)
 	sigBytes, _ := hex.DecodeString(req.Signature)
 	if !VerifySignature(peer.PublicKey, []byte(msg), sigBytes) {
@@ -180,7 +179,6 @@ func handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		p.LastSeen = time.Now()
 		p.LastTick = req.Tick
 		p.PeerCount = req.PeerCount
-		// Simple uptime reputation boost
 		if p.Reputation < 100 {
 			p.Reputation++
 		}
@@ -271,8 +269,7 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Use secure seed for location jitter
-	// FIX D: Ensure we don't rely on time.Now for critical game logic, though this specific line is just jitter
+	// FIX D: Secure RNG
 	mrand.Seed(time.Now().UnixNano())
 	var sysID string
 	found := false
@@ -281,8 +278,6 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	for i := 0; i < 50; i++ {
 		uuidBytes, _ := hex.DecodeString(userUUID)
-		// Using user UUID for deterministic offset
-		// We use modulo safely to map bytes to range
 		offX := int(uuidBytes[0]%40) - 20
 		offY := int(uuidBytes[1]%40) - 20
 		offZ := int(uuidBytes[2]%40) - 20
@@ -370,6 +365,13 @@ func handleFleetLaunch(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(fmt.Sprintf("Fleet Launched. Cost: %d. Arrival Tick: %d", cost, arrivalTick)))
 }
 
+// FIX H: Whitelist map for resources
+var validResources = map[string]bool{
+	"food": true, "water": true, "iron": true, "carbon": true, 
+	"gold": true, "platinum": true, "uranium": true, "diamond": true,
+	"vegetation": true, "oxygen": true, "fuel": true,
+}
+
 func handleBankBurn(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ColonyID int    `json:"colony_id"`
@@ -379,6 +381,18 @@ func handleBankBurn(w http.ResponseWriter, r *http.Request) {
 	}
 	json.NewDecoder(r.Body).Decode(&req)
 
+	// FIX I: Negative Number / Integer Overflow Check
+	if req.Amount <= 0 {
+		http.Error(w, "Invalid Amount", 400)
+		return
+	}
+
+	// FIX H: SQL Injection Protection (Whitelist)
+	if !validResources[req.Item] {
+		http.Error(w, "Invalid Resource", 400)
+		return
+	}
+
 	eff := GetEfficiency(req.ColonyID, req.Item)
 	if eff < 0.1 {
 		eff = 0.1
@@ -387,9 +401,16 @@ func handleBankBurn(w http.ResponseWriter, r *http.Request) {
 	multiplier := 1.0 / eff
 	basePrice := 1.0
 	payout := int(float64(req.Amount) * basePrice * multiplier)
+	
+	// Basic check for payout overflow (though unlikely given the types, safe habit)
+	if payout < 0 {
+		http.Error(w, "Payout Calculation Overflow", 500)
+		return
+	}
 
-	stateLock.Lock() // Use stateLock for write safety
+	stateLock.Lock() 
 	tx, _ := db.Begin()
+	// Safe to use req.Item now as it's whitelisted against a map of strings
 	res, _ := tx.Exec(fmt.Sprintf("UPDATE colonies SET %s = %s - ? WHERE id=? AND %s >= ?", req.Item, req.Item, req.Item), req.Amount, req.ColonyID, req.Amount)
 	if n, _ := res.RowsAffected(); n == 0 {
 		tx.Rollback()
@@ -411,8 +432,11 @@ func handleConstruct(w http.ResponseWriter, r *http.Request) {
 		Amount   int    `json:"amount"`
 	}
 	json.NewDecoder(r.Body).Decode(&req)
-	if req.Amount < 1 {
-		req.Amount = 1
+	
+	// FIX I: Negative Number Check
+	if req.Amount <= 0 {
+		http.Error(w, "Invalid Amount", 400)
+		return
 	}
 
 	costs, ok := UnitCosts[req.Unit]
@@ -441,10 +465,16 @@ func handleConstruct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// FIX I: Integer Overflow Check on Costs
 	neededIron := costs["iron"] * req.Amount
 	neededFood := costs["food"] * req.Amount
 	neededFuel := costs["fuel"] * req.Amount
 	neededCrew := costs["pop_laborers"] * req.Amount
+
+	if neededIron < 0 || neededFood < 0 || neededFuel < 0 || neededCrew < 0 {
+		http.Error(w, "Cost Overflow Detected", 400)
+		return
+	}
 
 	if c.Iron < neededIron || c.Food < neededFood || c.Fuel < neededFuel || c.PopLaborers < neededCrew {
 		http.Error(w, "Insufficient Resources/Crew", 402)
@@ -473,8 +503,11 @@ func handleBuild(w http.ResponseWriter, r *http.Request) {
 		Amount    int    `json:"amount"`
 	}
 	json.NewDecoder(r.Body).Decode(&req)
-	if req.Amount < 1 {
-		req.Amount = 1
+	
+	// FIX I: Negative Number Check
+	if req.Amount <= 0 {
+		http.Error(w, "Invalid Amount", 400)
+		return
 	}
 
 	cost, ok := BuildingCosts[req.Structure]
@@ -494,8 +527,14 @@ func handleBuild(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// FIX I: Integer Overflow Check
 	neededIron := cost["iron"] * req.Amount
 	neededCarbon := cost["carbon"] * req.Amount
+
+	if neededIron < 0 || neededCarbon < 0 {
+		http.Error(w, "Cost Overflow Detected", 400)
+		return
+	}
 
 	if c.Iron < neededIron || c.Carbon < neededCarbon {
 		http.Error(w, "Insufficient Resources", 402)

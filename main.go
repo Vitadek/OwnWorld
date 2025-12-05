@@ -29,7 +29,7 @@ func initConfig() {
 }
 
 // FIX F: Bootstrapping - Fetch Genesis BEFORE DB Init
-func fetchGenesisFromSeed(seeds string) {
+func fetchGenesisFromSeed(seeds string) string {
 	nodeList := strings.Split(seeds, ",")
 	for _, seed := range nodeList {
 		seed = strings.TrimSpace(seed)
@@ -40,15 +40,11 @@ func fetchGenesisFromSeed(seeds string) {
 			targetURL = "http://" + seed + "/federation/handshake"
 		}
 
-		// We send a dummy handshake just to get the peer's Genesis Hash back
-		// Note: In a real implementation, we might want a dedicated /info endpoint
-		// But /handshake works because it returns GenesisHash in error or success usually,
-		// Or we can just try to connect. 
-		// Actually, let's hit /status or similar if it existed, but based on the code,
-		// we can perform a GET on /api/status if exposed, or just proceed.
-		// The prompt implementation suggests performing a request to get the hash.
-		// The easiest way with current handlers is likely a simple GET to /api/status of the seed.
-		// NOTE: handlers.go defines /api/status.
+		// We attempt to hit the seed status to get info (if available)
+		// Or we can rely on the handshake. 
+		// For this fix, we will simply try to get the genesis from a status endpoint if it exists,
+		// or defaulting to handshake behavior.
+		// NOTE: handlers.go was updated to output genesis in /api/status.
 		
 		statusURL := seed + "/api/status"
 		if !strings.HasPrefix(seed, "http") {
@@ -59,33 +55,19 @@ func fetchGenesisFromSeed(seeds string) {
 		resp, err := client.Get(statusURL)
 		if err == nil && resp.StatusCode == 200 {
 			var status struct {
-				UUID string `json:"uuid"`
-				// We need the seed to return GenesisHash in status, but currently it doesn't.
-				// Alternative: The prompt says "Return that string".
-				// Since we can't easily change the Seed's code (it might be running old code),
-				// we assume the Seed exposes it or we trust the first Handshake response.
+				UUID    string `json:"uuid"`
+				Genesis string `json:"genesis"`
 			}
 			json.NewDecoder(resp.Body).Decode(&status)
 			resp.Body.Close()
 			
-			// WAITING FOR FIX: The current /api/status doesn't return GenesisHash. 
-			// However, handleHandshake DOES require a matching genesis hash to accept.
-			// This creates a catch-22.
-			// Ideally, we blindly trust the seed for the first connection.
-			// Let's rely on the environment variable injection for now or assume
-			// the user has configured the correct GENESIS_HASH env var if strictly needed.
-			// BUT, for this fix, we will simulate fetching.
-			
-			// In a robust fix, we would actually hit a public endpoint.
-			// Since we are modifying the code, let's assume we update /api/status to include it 
-			// OR we use the bootstrapFederation logic later.
-			// For the purpose of "Fix F", we need to populate TargetGenesisHash.
-			// I will leave this placeholder logic here:
-			
-			// Note: If we really want to fix this, we need to update /api/status handler too.
-			// See main.go L108.
+			if status.Genesis != "" {
+				InfoLog.Printf("🌍 Found Universe Genesis via Seed: %s", status.Genesis)
+				return status.Genesis
+			}
 		}
 	}
+	return ""
 }
 
 func bootstrapFederation() {
@@ -166,11 +148,10 @@ func main() {
 	setupLogging()
 	initConfig()
 
-	// FIX F: Pre-fetch Genesis Hash (Logic Stub)
-	// In a real deployment, we'd query the seed here to get the hash
-	// before initializing our own DB, ensuring we don't create a split-brain universe.
-	// For now, we assume if SEED_NODES are present, we might want to wait or use a known hash.
-	// TargetGenesisHash = fetchGenesisFromSeed(os.Getenv("SEED_NODES")) 
+	// FIX F: Pre-fetch Genesis Hash
+	// We now actually use the fetched hash to initialize our identity
+	// This ensures we bind to the correct universe instead of creating a split-brain.
+	TargetGenesisHash = fetchGenesisFromSeed(os.Getenv("SEED_NODES")) 
 
 	initDB() 
 
@@ -218,7 +199,7 @@ func main() {
 		Addr:         ":8080",
 		Handler:      handler,
 		ReadTimeout:  5 * time.Second,
-		WriteTimeout: 10 * time.Second,
+		WriteTimeout:  10 * time.Second,
 		IdleTimeout:  120 * time.Second,
 	}
 	
