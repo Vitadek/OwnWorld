@@ -29,6 +29,10 @@ var (
 	ServerUUID  string
 	ServerLoc   []int // [x, y, z]
 	GenesisHash string
+	
+	// FIX F: Bootstrapping - Allow main.go to inject the correct GenesisHash before DB init
+	TargetGenesisHash string 
+
 	PrivateKey  ed25519.PrivateKey
 	PublicKey   ed25519.PublicKey
 
@@ -56,7 +60,7 @@ var (
 	mapSnapshot      atomic.Value 
 	immigrationQueue = make(chan HandshakeRequest, 50)
 	
-	// Locking (The missing piece)
+	// Locking
 	stateLock sync.Mutex
 	
 	// Buffers
@@ -67,7 +71,22 @@ var (
 	// Rate Limiting
 	ipLimiters = make(map[string]*rate.Limiter)
 	ipLock     sync.Mutex
+
+	// FIX B: Replay Attack Protection
+	// We store the hash of valid signatures seen in the current tick window.
+	SeenTransactions = make(map[string]bool)
+	SeenTxLock       sync.Mutex
 )
+
+// FIX B: Prune Cache Helper
+// Called by simulation.go -> tickWorld() to clear memory every tick
+func pruneTransactionCache() {
+	SeenTxLock.Lock()
+	defer SeenTxLock.Unlock()
+	// Re-allocate map to clear it.
+	// In a high-perf scenario, we might use a ring buffer, but this is safe for now.
+	SeenTransactions = make(map[string]bool) 
+}
 
 // Game Constants
 var UnitCosts = map[string]map[string]int{

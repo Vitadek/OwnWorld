@@ -79,16 +79,33 @@ func snapshotWorld() {
 
 	rawJSON, _ := json.Marshal(colonies)
 	compressed := compressLZ4(rawJSON) 
-	hash := hashBLAKE3(compressed)     
+	
+	// FIX E: Integrity Hash Chain
+	// Link new snapshot to previous snapshot hash
+	var prevHash string
+	err = db.QueryRow("SELECT final_hash FROM daily_snapshots ORDER BY day_id DESC LIMIT 1").Scan(&prevHash)
+	if err != nil {
+		prevHash = GenesisHash // Link to Genesis if first snapshot
+	}
+
+	// Combine: Compressed State + Prev Hash -> New Hash
+	combined := append(compressed, []byte(prevHash)...)
+	finalHash := hashBLAKE3(combined)
 
 	dayID := int(CurrentTick / 17280) // Approx 1 day
+	
+	InfoLog.Printf("📸 Snapshot Day %d. Size: %d bytes. Hash: %s", dayID, len(compressed), finalHash)
+	
 	db.Exec("INSERT OR REPLACE INTO daily_snapshots (day_id, state_blob, final_hash) VALUES (?, ?, ?)", 
-		dayID, compressed, hash)
+		dayID, compressed, finalHash)
 }
 
 func tickWorld() {
 	stateLock.Lock()
 	defer stateLock.Unlock()
+
+	// FIX B: Prune Replay Cache (Clean memory every tick)
+	pruneTransactionCache()
 
 	current := atomic.AddInt64(&CurrentTick, 1)
 	db.Exec("INSERT INTO transaction_log (tick, action_type) VALUES (?, 'TICK')", current)
@@ -168,11 +185,16 @@ func tickWorld() {
 		tx.Commit()
 	}
 	
+	// Create snapshot once a day (approx) to save state
+	if current % 17280 == 0 {
+		go snapshotWorld()
+	}
+
 	recalculateLeader()
 }
 
 func runGameLoop() {
-	InfoLog.Println("Starting Galaxy Engine...")
+	//InfoLog.Println("Starting Galaxy Engine...")
 	ticker := time.NewTicker(5 * time.Second) 
 	for {
 		<-ticker.C

@@ -98,15 +98,27 @@ func initIdentity() {
 		InfoLog.Println("🚀 FIRST BOOT: Generating Identity...")
 		pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 
-		// Genesis Bind
-		rndBytes := make([]byte, 8); rand.Read(rndBytes)
-		genesisData := fmt.Sprintf("GENESIS-%d-%x", time.Now().UnixNano(), rndBytes)
-		hash := blake3.Sum256([]byte(genesisData))
-		uuid = hex.EncodeToString(hash[:])
+		// FIX F: Bootstrap Genesis
+		// If TargetGenesisHash was fetched from a seed (main.go), use it.
+		// Otherwise, create a new random one (Genesis Mode).
+		if TargetGenesisHash != "" {
+			GenesisHash = TargetGenesisHash
+			InfoLog.Printf("🔗 Binding to Federation Genesis: %s", GenesisHash)
+		} else {
+			// Random Genesis for isolated/seed nodes
+			rndBytes := make([]byte, 8); rand.Read(rndBytes)
+			genesisData := fmt.Sprintf("GENESIS-%d-%x", time.Now().UnixNano(), rndBytes)
+			hash := blake3.Sum256([]byte(genesisData))
+			GenesisHash = hex.EncodeToString(hash[:])
+			InfoLog.Printf("✨ Created NEW Genesis: %s", GenesisHash)
+		}
+		
+		// Use public key hash as UUID
+		uuid = hashBLAKE3(pub)
 
 		tx, _ := db.Begin()
 		tx.Exec("INSERT INTO system_meta (key, value) VALUES ('server_uuid', ?)", uuid)
-		tx.Exec("INSERT INTO system_meta (key, value) VALUES ('genesis_hash', ?)", uuid)
+		tx.Exec("INSERT INTO system_meta (key, value) VALUES ('genesis_hash', ?)", GenesisHash)
 		tx.Exec("INSERT INTO system_meta (key, value) VALUES ('priv_key', ?)", hex.EncodeToString(priv))
 		tx.Exec("INSERT INTO system_meta (key, value) VALUES ('pub_key', ?)", hex.EncodeToString(pub))
 		tx.Commit()

@@ -89,6 +89,21 @@ func pruneDeadPeers() {
 
 // --- Consensus & Sync ---
 
+// FIX G: EigenTrust Implementation (Simplified)
+// Calculates a trust score based on peer Reputation and Uptime.
+// In a full implementation, this would involve matrix multiplication of peer-to-peer trust values.
+func getEigenTrustScore(p *Peer) int {
+	// Base score from reputation (accumulated via good behavior/uptime)
+	score := p.Reputation 
+	
+	// Penalize if relation is hostile
+	if p.Relation == 2 { // Hostile
+		score = 0
+	}
+	
+	return score
+}
+
 func recalculateLeader() {
 	peerLock.RLock()
 	defer peerLock.RUnlock()
@@ -98,12 +113,20 @@ func recalculateLeader() {
 		Score int64
 	}
 	
-	myScore := (atomic.LoadInt64(&CurrentTick) << 16) | int64(len(Peers))
+	// My score: Tick Height + (Static Trust 100 * 1000)
+	// Self-trust is high by default in this implementation
+	myScore := (atomic.LoadInt64(&CurrentTick) << 16) | int64(100 * 1000)
 	candidates := []Candidate{{UUID: ServerUUID, Score: myScore}}
 	
 	for _, p := range Peers {
-		if p.Reputation < 0 { continue } // Skip banned
-		pScore := (p.LastTick << 16) | int64(p.PeerCount)
+		if p.Reputation < 0 { continue } // Skip banned/bad actors
+		
+		// FIX G: Use Trust Score instead of Raw Peer Count
+		trustScore := getEigenTrustScore(p)
+		
+		// Score = (BlockHeight * 65536) + TrustScore
+		// This prioritizes the longest chain, but uses Trust to break ties or filter weak nodes
+		pScore := (p.LastTick << 16) | int64(trustScore * 1000)
 		candidates = append(candidates, Candidate{UUID: p.UUID, Score: pScore})
 	}
 
@@ -112,6 +135,7 @@ func recalculateLeader() {
 		if candidates[i].Score != candidates[j].Score {
 			return candidates[i].Score > candidates[j].Score
 		}
+		// Tie-breaker: Lexicographical UUID
 		return candidates[i].UUID > candidates[j].UUID
 	})
 
