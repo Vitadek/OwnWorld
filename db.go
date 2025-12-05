@@ -22,6 +22,7 @@ func initDB() {
 
 	db.Exec("PRAGMA journal_mode=WAL;")
 
+	// FIX IDOR: Added session_token to users table
 	schema := `
 	CREATE TABLE IF NOT EXISTS system_meta (key TEXT PRIMARY KEY, value TEXT);
 
@@ -33,7 +34,8 @@ func initDB() {
 		credits INTEGER DEFAULT 0,
 		is_local BOOLEAN DEFAULT 1,
 		ed25519_pubkey TEXT,
-		ed25519_priv_enc TEXT  -- NEW: Stores encrypted private key
+		ed25519_priv_enc TEXT,
+		session_token TEXT  -- Stores active session token
 	);
 
 	CREATE TABLE IF NOT EXISTS solar_systems (

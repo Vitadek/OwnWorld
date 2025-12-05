@@ -121,7 +121,10 @@ func handleFederationTransaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// FIX J: Check Replay Cache (Double Buffer)
+	// FIX J: Replay Race Condition (Double Buffer Check)
+	// We check both the current and previous tick buffers.
+	// This prevents a transaction from executing twice if it arrives
+	// exactly when the cache rotates.
 	sigHex := hex.EncodeToString(req.Signature)
 	
 	SeenTxLock.Lock()
@@ -251,18 +254,60 @@ func handleSyncLedger(w http.ResponseWriter, r *http.Request) {
 
 // --- Client Handlers ---
 
+func generateSessionToken() string {
+	b := make([]byte, 32)
+	rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
 func handleRegister(w http.ResponseWriter, r *http.Request) {
 	var req struct{ Username, Password string }
 	json.NewDecoder(r.Body).Decode(&req)
 
+	// Check if user exists first (Login flow)
+	var storedHash, globalUUID, sysID string
+	var sysX, sysY, sysZ int
+	
+	err := db.QueryRow("SELECT password_hash, global_uuid FROM users WHERE username=?", req.Username).Scan(&storedHash, &globalUUID)
+	
+	if err == nil {
+		// User exists, verify password
+		passHash := hashBLAKE3([]byte(req.Password))
+		if storedHash == passHash {
+			// Login Success: Issue new Session Token
+			token := generateSessionToken()
+			db.Exec("UPDATE users SET session_token=? WHERE global_uuid=?", token, globalUUID)
+			
+			// Fetch location for response
+			// Note: This is simplified, assumes 1 system per user for now
+			db.QueryRow("SELECT id, x, y, z FROM solar_systems WHERE owner_uuid=?", globalUUID).Scan(&sysID, &sysX, &sysY, &sysZ)
+			
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"status":    "logged_in", 
+				"user_uuid": globalUUID,
+				"session_token": token, // Return Token
+				"system_id": sysID,
+				"location":  []int{sysX, sysY, sysZ},
+				"message":   "Welcome back, Commander.",
+			})
+			return
+		} else {
+			http.Error(w, "Invalid Credentials", 401)
+			return
+		}
+	}
+
+	// User does not exist, Proceed with Registration
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	userUUID := hashBLAKE3(pub)
 	pubHex := hex.EncodeToString(pub)
 	privEnc := encryptKey(priv, req.Password)
 	passHash := hashBLAKE3([]byte(req.Password))
+	token := generateSessionToken()
 
-	_, err := db.Exec(`INSERT INTO users (global_uuid, username, password_hash, is_local, ed25519_pubkey, ed25519_priv_enc) 
-	                   VALUES (?, ?, ?, 1, ?, ?)`, userUUID, req.Username, passHash, pubHex, privEnc)
+	// FIX IDOR: Insert session_token
+	_, err = db.Exec(`INSERT INTO users (global_uuid, username, password_hash, is_local, ed25519_pubkey, ed25519_priv_enc, session_token) 
+	                   VALUES (?, ?, ?, 1, ?, ?, ?)`, userUUID, req.Username, passHash, pubHex, privEnc, token)
 
 	if err != nil {
 		http.Error(w, "Taken", 400)
@@ -271,11 +316,8 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	// FIX D: Secure RNG
 	mrand.Seed(time.Now().UnixNano())
-	var sysID string
 	found := false
 	
-	var sysX, sysY, sysZ int
-
 	for i := 0; i < 50; i++ {
 		uuidBytes, _ := hex.DecodeString(userUUID)
 		offX := int(uuidBytes[0]%40) - 20
@@ -313,6 +355,7 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":    "registered", 
 		"user_uuid": userUUID,
+		"session_token": token, // Return Token
 		"system_id": sysID,
 		"location":  []int{sysX, sysY, sysZ},
 		"message":   "Identity Secured. Colony Founded. Ark Ship Ready.",
@@ -365,7 +408,7 @@ func handleFleetLaunch(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(fmt.Sprintf("Fleet Launched. Cost: %d. Arrival Tick: %d", cost, arrivalTick)))
 }
 
-// FIX H: Whitelist map for resources
+// FIX H: Whitelist map for SQL Injection protection
 var validResources = map[string]bool{
 	"food": true, "water": true, "iron": true, "carbon": true, 
 	"gold": true, "platinum": true, "uranium": true, "diamond": true,
@@ -381,13 +424,14 @@ func handleBankBurn(w http.ResponseWriter, r *http.Request) {
 	}
 	json.NewDecoder(r.Body).Decode(&req)
 
-	// FIX I: Negative Number / Integer Overflow Check
+	// FIX I: Negative Number Check (Prevention)
 	if req.Amount <= 0 {
 		http.Error(w, "Invalid Amount", 400)
 		return
 	}
 
 	// FIX H: SQL Injection Protection (Whitelist)
+	// We only allow columns that are explicitly in our map.
 	if !validResources[req.Item] {
 		http.Error(w, "Invalid Resource", 400)
 		return
@@ -402,7 +446,7 @@ func handleBankBurn(w http.ResponseWriter, r *http.Request) {
 	basePrice := 1.0
 	payout := int(float64(req.Amount) * basePrice * multiplier)
 	
-	// Basic check for payout overflow (though unlikely given the types, safe habit)
+	// FIX I: Integer Overflow Check (Payout)
 	if payout < 0 {
 		http.Error(w, "Payout Calculation Overflow", 500)
 		return
@@ -410,8 +454,10 @@ func handleBankBurn(w http.ResponseWriter, r *http.Request) {
 
 	stateLock.Lock() 
 	tx, _ := db.Begin()
+	
 	// Safe to use req.Item now as it's whitelisted against a map of strings
 	res, _ := tx.Exec(fmt.Sprintf("UPDATE colonies SET %s = %s - ? WHERE id=? AND %s >= ?", req.Item, req.Item, req.Item), req.Amount, req.ColonyID, req.Amount)
+	
 	if n, _ := res.RowsAffected(); n == 0 {
 		tx.Rollback()
 		stateLock.Unlock()
@@ -589,8 +635,18 @@ func handleDeploy(w http.ResponseWriter, r *http.Request) {
 
 func handleState(w http.ResponseWriter, r *http.Request) {
 	userUUID := r.Header.Get("X-User-UUID")
-	if userUUID == "" {
-		http.Error(w, "Missing X-User-UUID", 401)
+	token := r.Header.Get("X-Session-Token") // FIX IDOR: Require Token
+
+	if userUUID == "" || token == "" {
+		http.Error(w, "Missing Auth Headers", 401)
+		return
+	}
+
+	// FIX IDOR: Verify ownership
+	var count int
+	err := db.QueryRow("SELECT count(*) FROM users WHERE global_uuid=? AND session_token=?", userUUID, token).Scan(&count)
+	if err != nil || count == 0 {
+		http.Error(w, "Access Denied (Invalid Session)", 403)
 		return
 	}
 

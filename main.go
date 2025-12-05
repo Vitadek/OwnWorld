@@ -40,12 +40,7 @@ func fetchGenesisFromSeed(seeds string) string {
 			targetURL = "http://" + seed + "/federation/handshake"
 		}
 
-		// We attempt to hit the seed status to get info (if available)
-		// Or we can rely on the handshake. 
-		// For this fix, we will simply try to get the genesis from a status endpoint if it exists,
-		// or defaulting to handshake behavior.
-		// NOTE: handlers.go was updated to output genesis in /api/status.
-		
+		// We attempt to hit the seed status to get info
 		statusURL := seed + "/api/status"
 		if !strings.HasPrefix(seed, "http") {
 			statusURL = "http://" + seed + "/api/status"
@@ -148,9 +143,8 @@ func main() {
 	setupLogging()
 	initConfig()
 
-	// FIX F: Pre-fetch Genesis Hash
+	// FIX F: Pre-fetch Genesis Hash (Uncommented and Enabled)
 	// We now actually use the fetched hash to initialize our identity
-	// This ensures we bind to the correct universe instead of creating a split-brain.
 	TargetGenesisHash = fetchGenesisFromSeed(os.Getenv("SEED_NODES")) 
 
 	initDB() 
