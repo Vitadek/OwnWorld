@@ -2,31 +2,26 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>OwnWorld Commander v3 (Faction Era)</title>
+    <title>OwnWorld Commander v4 (Empire Era)</title>
     <style>
         :root { --bg:#050510; --panel:#151520; --accent:#00d2ff; --warn:#ffae00; --danger:#ff3333; --success:#00ff9d; --text:#ddd; }
         body { background:var(--bg); color:var(--text); font-family:monospace; margin:0; padding:20px; }
         
-        /* Layout */
         .grid { display:grid; grid-template-columns: 1fr 350px; gap:20px; }
         .panel { background:var(--panel); border:1px solid #333; padding:15px; margin-bottom:15px; }
         
-        /* Controls */
         button { background:transparent; border:1px solid var(--accent); color:var(--accent); padding:5px 10px; cursor:pointer; margin:2px; font-family:inherit; transition:0.2s; }
         button:hover { background:var(--accent); color:#000; }
         button:disabled { border-color:#555; color:#555; cursor:wait; }
         input, select { background:#000; color:#fff; border:1px solid #555; padding:8px; margin-bottom:10px; width:100%; box-sizing:border-box; }
 
-        /* Tabs */
         .tab-bar { margin-bottom:15px; border-bottom:1px solid #444; }
         .tab { padding:10px; border:none; background:none; color:#666; cursor:pointer; font-size:1.1em; }
         .tab.active { color:var(--accent); border-bottom:2px solid var(--accent); }
 
-        /* Resources Grid */
         .res-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:5px; margin:10px 0; text-align:center; font-size:0.85em; }
         .res-box { background:#222; padding:5px; border-bottom:2px solid #555; position:relative; }
         
-        /* Auth Modal */
         #auth-overlay { position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.9); z-index:2000; display:flex; justify-content:center; align-items:center; }
         .auth-box { background:var(--panel); border:1px solid var(--accent); padding:30px; width:320px; text-align:center; }
         
@@ -36,6 +31,8 @@
         
         .fleet-card { border: 1px solid #444; padding: 10px; margin-bottom: 5px; background: #1a1a25; }
         .module-tag { display: inline-block; background: #333; padding: 2px 5px; font-size: 0.8em; margin-right: 3px; border-radius: 3px; }
+        
+        .context-bar { background: #111; padding: 10px; margin-bottom: 20px; border: 1px solid #444; display: flex; align-items: center; justify-content: space-between; }
     </style>
 </head>
 <body>
@@ -44,17 +41,13 @@
 <div id="auth-overlay">
     <div class="auth-box">
         <h2 style="color:var(--accent); margin-top:0;">OWNWORLD UPLINK</h2>
-        
         <input id="srv-url" value="http://localhost:8080" placeholder="Server URL" style="margin-bottom:20px;">
-
         <div class="auth-tabs">
             <button id="tab-login" class="auth-tab-btn active" onclick="switchAuth('login')" style="border:none;">LOGIN</button>
             <button id="tab-register" class="auth-tab-btn" onclick="switchAuth('register')" style="border:none;">REGISTER</button>
         </div>
-
-        <input id="login-user" placeholder="Username (Alphanumeric)">
+        <input id="login-user" placeholder="Username">
         <input id="login-pass" type="password" placeholder="Password">
-        
         <button id="auth-btn" onclick="performAuth()" style="width:100%; padding:10px; font-weight:bold; margin-top:10px; background:var(--success); color:#000;">LOGIN</button>
         <div id="auth-msg" style="color:var(--danger); margin-top:10px; font-size:0.9em;"></div>
     </div>
@@ -62,43 +55,48 @@
 
 <!-- MAIN UI -->
 <div id="app-ui" style="display:none;">
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
         <div>
             <strong style="font-size:1.2em; color:var(--accent)">COMMANDER <span id="display-user">...</span></strong>
-            <span style="color:#666; margin-left:10px;" id="display-id">ID: ...</span>
         </div>
         <div>
             TICK: <span id="srv-tick" style="color:var(--warn)">...</span>
-            LEADER: <span id="srv-leader" style="color:var(--success)">...</span>
         </div>
     </div>
 
+    <!-- Active Colony Context Selector -->
+    <div class="context-bar">
+        <span>ACTIVE PROVINCE:</span>
+        <select id="colony-selector" onchange="switchColonyContext()" style="width:auto; margin:0; background:#222;">
+            <option value="">Loading Provinces...</option>
+        </select>
+        <span id="province-stats" style="font-size:0.9em; color:#888;"></span>
+    </div>
+
     <div class="tab-bar">
-        <button class="tab active" onclick="setTab('colonies')">COLONIES</button>
-        <button class="tab" onclick="setTab('fleets')">FLEETS (MODULAR)</button>
+        <button class="tab active" onclick="setTab('colonies')">EMPIRE</button>
+        <button class="tab" onclick="setTab('fleets')">FLEETS</button>
         <button class="tab" onclick="setTab('construction')">SHIPYARD</button>
         <button class="tab" onclick="setTab('scan')">SCANNER</button>
     </div>
 
     <div class="grid">
-        <!-- Main View -->
         <div id="main-view">
             <div style="color:#666; text-align:center; padding:50px;">Waiting for Uplink...</div>
         </div>
 
-        <!-- Sidebar -->
         <div class="sidebar">
             <div class="panel">
-                <h3 style="margin-top:0; color:var(--warn)">QUICK ACTIONS</h3>
+                <h3 style="margin-top:0; color:var(--warn)">PROVINCE ACTIONS</h3>
                 <input id="action-amt" type="number" value="1" placeholder="Amount">
                 <div style="display:grid; grid-template-columns:1fr 1fr; gap:5px;">
                     <button onclick="quickBuild('farm')">Build Farm</button>
                     <button onclick="quickBuild('well')">Build Well</button>
-                    <button onclick="quickBuild('iron_mine')">Iron Mine</button>
-                    <button onclick="quickBuild('urban_housing')">Housing</button>
+                    <button onclick="quickBuild('steel_mill')">Steel Mill</button>
+                    <button onclick="quickBuild('winery')">Winery</button>
                 </div>
                 <div style="margin-top:10px; border-top:1px solid #333; padding-top:10px;">
-                    <button style="width:100%; border-color:var(--success); color:var(--success)" onclick="quickBurn('iron')">BURN IRON (Sell)</button>
+                    <button style="width:100%; border-color:var(--success); color:var(--success)" onclick="quickBurn('steel')">BURN STEEL (Sell)</button>
                 </div>
             </div>
             
@@ -118,10 +116,12 @@
     let SESSION_TOKEN = null;
     let AUTH_MODE = 'login';
     let ACTIVE_TAB = 'colonies';
-
-    // Shipyard State
+    
+    // Context State
+    let ACTIVE_COLONY_ID = null;
     let SELECTED_HULL = 'Fighter';
     let SELECTED_MODULES = [];
+    let SEED_PAYLOAD = { food: 500, iron: 100, laborers: 100 };
 
     window.onload = function() {
         const saved = localStorage.getItem("ownworld_url");
@@ -171,7 +171,6 @@
         document.getElementById('auth-overlay').style.display = 'none';
         document.getElementById('app-ui').style.display = 'block';
         document.getElementById('display-user').innerText = USER_NAME;
-        document.getElementById('display-id').innerText = `ID: ${USER_ID.substring(0,8)}...`;
         refreshState();
         setInterval(refreshState, 2000); 
     }
@@ -188,7 +187,6 @@
             const sRes = await fetch(`${API_URL}/status`);
             const sData = await sRes.json();
             document.getElementById('srv-tick').innerText = sData.tick;
-            document.getElementById('srv-leader').innerText = sData.leader ? sData.leader.substring(0,8) : "???";
 
             const res = await fetch(`${API_URL}/state`, {
                 headers: {
@@ -198,9 +196,36 @@
             });
             if(res.ok) {
                 STATE = await res.json();
+                updateContextSelector();
                 renderMain();
             }
         } catch(e) {}
+    }
+
+    function updateContextSelector() {
+        const sel = document.getElementById('colony-selector');
+        const prev = ACTIVE_COLONY_ID;
+        
+        // Preserve selection or default to first
+        if (!ACTIVE_COLONY_ID && STATE.MyColonies && STATE.MyColonies.length > 0) {
+            ACTIVE_COLONY_ID = STATE.MyColonies[0].id;
+        }
+
+        // Rebuild options if count changed (simple check)
+        if (sel.options.length !== STATE.MyColonies.length) {
+            sel.innerHTML = STATE.MyColonies.map(c => 
+                `<option value="${c.id}">${escapeHTML(c.name)} (${c.system_id})</option>`
+            ).join('');
+            sel.value = ACTIVE_COLONY_ID;
+        }
+        
+        // Ensure active colony ID is synced
+        ACTIVE_COLONY_ID = parseInt(sel.value);
+    }
+    
+    function switchColonyContext() {
+        ACTIVE_COLONY_ID = parseInt(document.getElementById('colony-selector').value);
+        renderMain(); // Re-render to show context specific data if needed
     }
 
     function escapeHTML(str) {
@@ -218,21 +243,21 @@
                 return;
             }
             v.innerHTML = STATE.MyColonies.map(c => {
-                const pop = c.pop_laborers + (c.pop_specialists||0);
+                const isParent = c.parent_id === 0;
                 return `
-                <div class="panel" style="border-left: 4px solid var(--accent)">
+                <div class="panel" style="border-left: 4px solid ${isParent ? 'var(--warn)' : 'var(--accent)'}">
                     <div style="display:flex; justify-content:space-between; border-bottom:1px solid #333; padding-bottom:10px; margin-bottom:10px;">
-                        <strong style="font-size:1.2em;">${escapeHTML(c.name)}</strong>
-                        <span>SYS: ${c.system_id || "Unknown"}</span>
+                        <strong style="font-size:1.2em;">${escapeHTML(c.name)} ${isParent ? '(CAPITAL)' : ''}</strong>
+                        <span>SYS: ${c.system_id}</span>
                     </div>
                     <div class="res-grid">
                         ${renderResBox('IRON', c.iron)}
-                        ${renderResBox('CARB', c.carbon)}
-                        ${renderResBox('H2O', c.water)}
-                        ${renderResBox('FOOD', c.vegetation)}
+                        ${renderResBox('STEEL', c.steel)}
+                        ${renderResBox('WINE', c.wine)}
+                        ${renderResBox('FOOD', c.food)}
                     </div>
                     <div style="background:#111; padding:10px; font-size:0.9em; color:#888; margin-top:10px;">
-                        POP: ${pop} | STABILITY: ${Math.floor(c.stability_current)}%
+                        POP: ${c.pop_laborers} | ELITES: ${c.pop_elites} | STABILITY: ${Math.floor(c.stability_current)}%
                     </div>
                 </div>`;
             }).join('');
@@ -244,57 +269,47 @@
             v.innerHTML = STATE.MyFleets.map(f => `
                 <div class="fleet-card">
                     <div style="color:var(--accent); font-weight:bold;">${f.hull_class ? f.hull_class.toUpperCase() : 'UNKNOWN'} - ID: ${f.id}</div>
-                    <div style="color:#888; font-size:0.9em; margin:5px 0;">Status: ${f.status} | System: ${f.dest_system || f.origin_system}</div>
-                    <div>
-                        ${f.modules ? f.modules.map(m => `<span class="module-tag">${m}</span>`).join('') : ''}
-                    </div>
+                    <div style="color:#888; font-size:0.9em; margin:5px 0;">Status: ${f.status} | Loc: ${f.dest_system || f.origin_system}</div>
+                    <div>${f.modules ? f.modules.join(', ') : ''}</div>
+                    ${f.payload && f.payload.laborers > 0 ? `<div style="color:var(--success); font-size:0.8em; margin-top:5px;">Contains Seed Payload</div>` : ''}
                     <div style="margin-top:10px;">
                         <button onclick="launchFleet(${f.id})">LAUNCH</button>
+                        ${f.hull_class === 'Colonizer' && f.status === 'ORBIT' ? `<button onclick="deployColony(${f.id})">DEPLOY COLONY</button>` : ''}
                     </div>
                 </div>
             `).join('');
         } else if (ACTIVE_TAB === 'construction') {
             v.innerHTML = `
                 <div class="panel">
-                    <h3>SHIP DESIGNER</h3>
+                    <h3>IMPERIAL SHIPYARDS</h3>
+                    <div style="margin-bottom:10px; color:#888;">Constructing at Province ID: ${ACTIVE_COLONY_ID}</div>
+                    
                     <label>Hull Class:</label>
                     <select id="hull-select" onchange="SELECTED_HULL=this.value; SELECTED_MODULES=[]; renderMain()">
                         <option value="Fighter" ${SELECTED_HULL==='Fighter'?'selected':''}>Fighter (1 Eng, 4 Wpn)</option>
-                        <option value="SpeedyFighter" ${SELECTED_HULL==='SpeedyFighter'?'selected':''}>Speedy Fighter (2 Eng, 2 Wpn)</option>
-                        <option value="Bomber" ${SELECTED_HULL==='Bomber'?'selected':''}>Bomber (1 Eng, 1 Spec[Bomb])</option>
-                        <option value="Frigate" ${SELECTED_HULL==='Frigate'?'selected':''}>Frigate (4 Eng)</option>
                         <option value="Colonizer" ${SELECTED_HULL==='Colonizer'?'selected':''}>Colonizer (2 Eng, 1 Spec[Ark])</option>
                     </select>
                     
                     <div style="margin-top:10px;">
                         <button onclick="addMod('warp_drive')">+ Warp Drive</button>
                         <button onclick="addMod('laser')">+ Laser</button>
-                        <button onclick="addMod('booster')">+ Booster</button>
                         <button onclick="addMod('colony_kit')">+ Colony Kit</button>
-                        <button onclick="addMod('bomb_bay')">+ Bomb Bay</button>
                         <button onclick="SELECTED_MODULES=[]; renderMain()" style="color:var(--danger); border-color:var(--danger)">CLEAR</button>
                     </div>
                     
                     <div style="margin:15px 0; border:1px dashed #555; padding:10px;">
-                        <strong>Current Configuration:</strong>
-                        <div>${SELECTED_MODULES.join(', ') || 'Empty'}</div>
+                        <strong>Modules:</strong> ${SELECTED_MODULES.join(', ') || 'Empty'}
                     </div>
                     
+                    ${SELECTED_HULL === 'Colonizer' ? `
+                    <div style="margin:15px 0; border:1px solid var(--success); padding:10px;">
+                        <h4 style="margin-top:0; color:var(--success)">COLONY SEED PAYLOAD</h4>
+                        Food: <input type="number" value="${SEED_PAYLOAD.food}" onchange="SEED_PAYLOAD.food=parseInt(this.value)">
+                        Iron: <input type="number" value="${SEED_PAYLOAD.iron}" onchange="SEED_PAYLOAD.iron=parseInt(this.value)">
+                        Laborers: <input type="number" value="${SEED_PAYLOAD.laborers}" onchange="SEED_PAYLOAD.laborers=parseInt(this.value)">
+                    </div>` : ''}
+                    
                     <button style="width:100%; background:var(--success); color:black;" onclick="constructShip()">CONSTRUCT SHIP</button>
-                </div>
-            `;
-        } else if (ACTIVE_TAB === 'scan') {
-            v.innerHTML = `
-                <div class="panel">
-                    <h3>SECTOR SCANNER</h3>
-                    <p>Enter coordinates to probe the Universal Hash Field.</p>
-                    <div style="display:flex; gap:10px; margin-bottom:10px;">
-                        <input id="scan-x" type="number" placeholder="X">
-                        <input id="scan-y" type="number" placeholder="Y">
-                        <input id="scan-z" type="number" placeholder="Z">
-                    </div>
-                    <button onclick="scanSector()" style="width:100%; border-color:var(--accent); color:var(--accent);">SCAN SECTOR</button>
-                    <div id="scan-results" style="margin-top:20px; font-family:monospace;"></div>
                 </div>
             `;
         }
@@ -303,17 +318,6 @@
     function addMod(m) {
         SELECTED_MODULES.push(m);
         renderMain();
-    }
-
-    async function constructShip() {
-        if(!STATE || !STATE.MyColonies[0]) return log("No Colony to build at.");
-        
-        apiCall('construct', {
-            colony_id: STATE.MyColonies[0].id,
-            hull_class: SELECTED_HULL,
-            modules: SELECTED_MODULES,
-            amount: 1
-        }, "Ship Construction Started");
     }
 
     function renderResBox(label, val) {
@@ -326,61 +330,55 @@
         renderMain();
     }
 
+    // --- Actions ---
     async function quickBuild(struct) {
-        if(!STATE || !STATE.MyColonies[0]) return log("No colony selected.");
-        const colId = STATE.MyColonies[0].id;
+        if(!ACTIVE_COLONY_ID) return log("No active province.");
         const amt = parseInt(document.getElementById('action-amt').value) || 1;
-        apiCall('build', {colony_id: colId, structure: struct, amount: amt}, "Construction Started");
+        apiCall('build', {colony_id: ACTIVE_COLONY_ID, structure: struct, amount: amt}, "Construction Started");
     }
 
     async function quickBurn(item) {
-        if(!STATE || !STATE.MyColonies[0]) return;
-        const colId = STATE.MyColonies[0].id;
+        if(!ACTIVE_COLONY_ID) return;
         const amt = parseInt(document.getElementById('action-amt').value) || 100;
-        apiCall('bank/burn', {colony_id: colId, item: item, amount: amt, user_id: 0}, "Resources Sold");
+        apiCall('bank/burn', {colony_id: ACTIVE_COLONY_ID, item: item, amount: amt, user_id: 0}, "Resources Sold");
+    }
+    
+    async function constructShip() {
+        if(!ACTIVE_COLONY_ID) return log("No active province.");
+        
+        // Prepare Payload only if needed
+        let payload = { food: 0, iron: 0, laborers: 0, resources: {} };
+        if (SELECTED_HULL === 'Colonizer') {
+            payload = {
+                laborers: SEED_PAYLOAD.laborers,
+                specialists: 0,
+                culture: 10.0, // Bonus stability
+                resources: {
+                    "food": SEED_PAYLOAD.food,
+                    "iron": SEED_PAYLOAD.iron
+                }
+            };
+        }
+
+        apiCall('construct', {
+            colony_id: ACTIVE_COLONY_ID,
+            hull_class: SELECTED_HULL,
+            modules: SELECTED_MODULES,
+            payload: payload
+        }, "Ship Construction Started");
     }
     
     async function launchFleet(id) {
-        const dest = prompt("Enter Target System ID (e.g. sys-100-50-20):");
+        const dest = prompt("Enter Target System ID or Coords (e.g. sys-100-50-20):");
         if(dest) {
             apiCall('fleet/launch', {fleet_id: id, target_system: dest}, "Launch Sequence Initiated");
         }
     }
-
-    async function scanSector() {
-        const x = parseInt(document.getElementById('scan-x').value);
-        const y = parseInt(document.getElementById('scan-y').value);
-        const z = parseInt(document.getElementById('scan-z').value);
-        
-        if (isNaN(x) || isNaN(y) || isNaN(z)) return log("Invalid Coords");
-
-        try {
-            const res = await fetch(`${API_URL}/scan`, {
-                method: 'POST', 
-                body: JSON.stringify({x: x, y: y, z: z}),
-                headers: {
-                    'X-User-UUID': USER_ID,
-                    'X-Session-Token': SESSION_TOKEN
-                }
-            });
-            const data = await res.json();
-            const el = document.getElementById('scan-results');
-            
-            if (data.has_system) {
-                el.innerHTML = `
-                    <div style="color:var(--success)">SIGNAL DETECTED!</div>
-                    <div>Type: ${data.system_type}</div>
-                    <div>Resources:</div>
-                    <ul style="font-size:0.9em; color:#ccc;">
-                        ${Object.entries(data.resources).map(([k,v]) => `<li>${k}: ${v.toFixed(2)}</li>`).join('')}
-                    </ul>
-                    <div style="color:var(--warn)">Hazards: ${(data.hazards * 100).toFixed(1)}%</div>
-                `;
-            } else {
-                el.innerHTML = "<div style='color:#666'>Void sector. No gravity well.</div>";
-            }
-        } catch(e) {
-            log("Scan Failed");
+    
+    async function deployColony(id) {
+        const name = prompt("Name the new Province:");
+        if(name) {
+            apiCall('deploy', {fleet_id: id, name: name}, "Deployment Initiated");
         }
     }
 

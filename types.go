@@ -14,7 +14,7 @@ type Peer struct {
 	CurrentTick int64
 	LastTick    int64
 	LastSeen    time.Time
-	Reputation  float64 // Changed to float64 for EigenTrust precision
+	Reputation  float64 
 	Relation    int // 0:Neutral, 1:Federated, 2:Hostile
     Location    []int // [x, y, z]
 }
@@ -43,6 +43,7 @@ type Colony struct {
 	ID            int            `json:"id"`
 	SystemID      string         `json:"system_id"`
 	OwnerUUID     string         `json:"owner_uuid"`
+	ParentID      int            `json:"parent_id"` // Track heritage
 	Name          string         `json:"name"`
 	Buildings     map[string]int `json:"buildings"`
 	
@@ -62,12 +63,24 @@ type Colony struct {
 	Oxygen     int `json:"oxygen"`
 	Fuel       int `json:"fuel"`
 	
+	// New Industry Resources
+	Steel      int `json:"steel"`
+	Wine       int `json:"wine"`
+	
 	StabilityCurrent float64 `json:"stability_current"`
 	StabilityTarget  float64 `json:"stability_target"`
 	MartialLaw       bool    `json:"martial_law"`
 }
 
-// Updated Fleet Structure for Modules
+// Payload for Colonization
+type FleetPayload struct {
+    PopLaborers   int            `json:"laborers"`
+    PopSpecialists int           `json:"specialists"`
+    Resources     map[string]int `json:"resources"`   // Food, Iron, etc.
+    CultureBonus  float64        `json:"culture"`     // Inherited Stability
+}
+
+// Updated Fleet Structure
 type Fleet struct {
 	ID           int      `json:"id"`
 	OwnerUUID    string   `json:"owner_uuid"`
@@ -77,23 +90,24 @@ type Fleet struct {
 	ArrivalTick  int64    `json:"arrival_tick"`
 	Fuel         int      `json:"fuel"`
 	
-	// New Modular System
-	HullClass    string   `json:"hull_class"` // "Fighter", "Bomber", "Frigate", "Colonizer"
-	Modules      []string `json:"modules"`    // ["warp_drive", "shield_gen"]
+	HullClass    string   `json:"hull_class"`
+	Modules      []string `json:"modules"`
 	
-	// Legacy fields (for backward compatibility if needed, else 0)
+	// The Seed Payload
+	Payload      FleetPayload `json:"payload"`
+	
+	// Legacy
 	ArkShip    int `json:"ark_ship"`
 	Fighters   int `json:"fighters"`
 	Frigates   int `json:"frigates"`
 	Haulers    int `json:"haulers"`
 }
 
-// New: Ship Hull Definition for Validation
 type ShipHull struct {
     Class        string 
     EngineSlots  int
     WeaponSlots  int
-    SpecialSlots int // Colonizer/BombBay
+    SpecialSlots int 
 }
 
 type HeartbeatRequest struct {
@@ -104,14 +118,12 @@ type HeartbeatRequest struct {
 	Signature string `json:"sig"` 
 }
 
-// Updated Grievance Type for EigenTrust
 type GrievanceReport struct {
     OffenderUUID string `json:"offender"`
     Damage       int    `json:"damage"`
-    Proof        string `json:"proof"` // Signature of the combat log
+    Proof        string `json:"proof"`
 }
 
-// For EigenTrust input
 type Grievance struct {
     OffenderUUID string
     VictimUUID   string

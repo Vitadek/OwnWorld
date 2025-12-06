@@ -39,7 +39,7 @@ func initDB() {
 
 	CREATE TABLE IF NOT EXISTS solar_systems (
 		id TEXT PRIMARY KEY,
-		type TEXT DEFAULT 'G2V', -- Now stores discovered types (void, gaia_world, etc.)
+		type TEXT DEFAULT 'G2V',
 		x INTEGER, y INTEGER, z INTEGER,
 		star_type TEXT, owner_uuid TEXT, tax_rate REAL DEFAULT 0.0,
 		is_federated BOOLEAN DEFAULT 0
@@ -50,21 +50,28 @@ func initDB() {
 		system_id TEXT,
 		owner_uuid TEXT,
 		name TEXT,
+		parent_colony_id INTEGER DEFAULT 0, -- Track Heritage
+		
 		pop_laborers INTEGER DEFAULT 100,
 		pop_specialists INTEGER DEFAULT 0,
 		pop_elites INTEGER DEFAULT 0,
+		
 		food INTEGER DEFAULT 1000, water INTEGER DEFAULT 1000,
 		iron INTEGER DEFAULT 0, carbon INTEGER DEFAULT 0, gold INTEGER DEFAULT 0,
 		platinum INTEGER DEFAULT 0, uranium INTEGER DEFAULT 0, diamond INTEGER DEFAULT 0,
 		vegetation INTEGER DEFAULT 0, oxygen INTEGER DEFAULT 1000,
 		fuel INTEGER DEFAULT 0,
+		
+		-- New Resources for Industry
+		steel INTEGER DEFAULT 0,
+		wine INTEGER DEFAULT 0,
+		
 		stability_current REAL DEFAULT 100.0,
 		stability_target REAL DEFAULT 100.0,
 		martial_law BOOLEAN DEFAULT 0,
 		buildings_json TEXT
 	);
 
-	-- UPDATED: Modular Ships
 	CREATE TABLE IF NOT EXISTS fleets (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		owner_uuid TEXT,
@@ -75,11 +82,11 @@ func initDB() {
 		arrival_tick INTEGER,
 		fuel INTEGER DEFAULT 0,
 		
-		-- New Modular Fields
-		hull_class TEXT,      -- "fighter", "bomber", "colonizer"
-		modules_json TEXT,    -- JSON Array: ["warp_drive", "laser"]
+		hull_class TEXT,
+		modules_json TEXT,
+		payload_json TEXT, -- Stores the "Seed" resources
 		
-		-- Legacy fields removed/ignored in new logic, kept for migration safety if needed
+		-- Legacy fields kept for schema compatibility
 		ark_ship INTEGER DEFAULT 0, 
 		fighters INTEGER DEFAULT 0,
 		frigates INTEGER DEFAULT 0,
@@ -95,7 +102,6 @@ func initDB() {
 		day_id INTEGER PRIMARY KEY, state_blob BLOB, final_hash TEXT
 	);
 
-	-- NEW: Grievances (The Trust Ledger)
 	CREATE TABLE IF NOT EXISTS grievances (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		offender_uuid TEXT,
@@ -106,6 +112,16 @@ func initDB() {
 	);
 	`
 	if _, err := db.Exec(schema); err != nil { panic(err) }
+
+	// Migrations for existing databases
+	// We use 'ignore' errors style for simplicity in this MVP, 
+	// or check if columns exist. SQLite 'ADD COLUMN' is safe to run if it doesn't exist, 
+	// but standard SQL throws error if exists.
+	// For robustness in this prompt context, we just attempt and ignore error.
+	db.Exec("ALTER TABLE colonies ADD COLUMN parent_colony_id INTEGER DEFAULT 0")
+	db.Exec("ALTER TABLE colonies ADD COLUMN steel INTEGER DEFAULT 0")
+	db.Exec("ALTER TABLE colonies ADD COLUMN wine INTEGER DEFAULT 0")
+	db.Exec("ALTER TABLE fleets ADD COLUMN payload_json TEXT")
 
 	initIdentity()
 }
