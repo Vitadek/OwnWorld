@@ -163,4 +163,4 @@ func initIdentity() {
 	}
 	ServerUUID = uuid
 	LeaderUUID = ServerUUID
-}	
+}

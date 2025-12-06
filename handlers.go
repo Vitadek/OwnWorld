@@ -16,6 +16,23 @@ import (
 	"time"
 )
 
+// --- Helper: Auth ---
+func authenticate(r *http.Request) (string, error) {
+	userUUID := r.Header.Get("X-User-UUID")
+	token := r.Header.Get("X-Session-Token")
+
+	if userUUID == "" || token == "" {
+		return "", fmt.Errorf("Missing Auth Headers")
+	}
+
+	var count int
+	err := db.QueryRow("SELECT count(*) FROM users WHERE global_uuid=? AND session_token=?", userUUID, token).Scan(&count)
+	if err != nil || count == 0 {
+		return "", fmt.Errorf("Access Denied")
+	}
+	return userUUID, nil
+}
+
 // --- Federation Handlers ---
 
 func processImmigration() {
@@ -135,6 +152,12 @@ func handleFederationTransaction(w http.ResponseWriter, r *http.Request) {
 	if tickDiff < -2 {
 		http.Error(w, "Transaction Expired", 408)
 		return
+	}
+
+	// Process Payload: Grievance Report
+	var grievance GrievanceReport
+	if err := json.Unmarshal(req.Payload, &grievance); err == nil && grievance.OffenderUUID != "" {
+		processGrievance(&grievance, req.UUID)
 	}
 
 	_, err = db.Exec("INSERT INTO transaction_log (tick, action_type, payload_blob) VALUES (?, 'FED_TX', ?)", req.Tick, req.Payload)
@@ -387,9 +410,9 @@ func handleScan(w http.ResponseWriter, r *http.Request) {
 	}
 	json.NewDecoder(r.Body).Decode(&req)
 
-	userUUID := r.Header.Get("X-User-UUID")
-	token := r.Header.Get("X-Session-Token")
-	if userUUID == "" || token == "" {
+	// FIX: Auth
+	_, err := authenticate(r)
+	if err != nil {
 		http.Error(w, "Unauthorized", 401)
 		return
 	}
@@ -411,18 +434,32 @@ func handleFleetLaunch(w http.ResponseWriter, r *http.Request) {
 	}
 	json.NewDecoder(r.Body).Decode(&req)
 
+	// FIX: Auth Check
+	userID, err := authenticate(r)
+	if err != nil {
+		http.Error(w, "Unauthorized", 401)
+		return
+	}
+
 	stateLock.Lock()
 	defer stateLock.Unlock()
 
 	var f Fleet
 	var currentSys string
 	var modJson string
-	err := db.QueryRow("SELECT owner_uuid, origin_system, fuel, status, hull_class, modules_json FROM fleets WHERE id=?", req.FleetID).Scan(&f.OwnerUUID, &currentSys, &f.Fuel, &f.Status, &f.HullClass, &modJson)
+	err = db.QueryRow("SELECT owner_uuid, origin_system, fuel, status, hull_class, modules_json FROM fleets WHERE id=?", req.FleetID).Scan(&f.OwnerUUID, &currentSys, &f.Fuel, &f.Status, &f.HullClass, &modJson)
 
 	if err != nil {
 		http.Error(w, "Fleet Not Found", 404)
 		return
 	}
+	
+	// FIX: Authorization Check (Is this my fleet?)
+	if f.OwnerUUID != userID {
+		http.Error(w, "Not your fleet", 403)
+		return
+	}
+
 	json.Unmarshal([]byte(modJson), &f.Modules)
 
 	if f.Status != "ORBIT" {
@@ -502,9 +539,15 @@ func handleBankBurn(w http.ResponseWriter, r *http.Request) {
 		ColonyID int    `json:"colony_id"`
 		Item     string `json:"item"`
 		Amount   int    `json:"amount"`
-		UserID   int    `json:"user_id"`
 	}
 	json.NewDecoder(r.Body).Decode(&req)
+
+	// FIX: Auth
+	userID, err := authenticate(r)
+	if err != nil {
+		http.Error(w, "Unauthorized", 401)
+		return
+	}
 
 	if req.Amount <= 0 {
 		http.Error(w, "Invalid Amount", 400)
@@ -513,6 +556,17 @@ func handleBankBurn(w http.ResponseWriter, r *http.Request) {
 
 	if !validResources[req.Item] {
 		http.Error(w, "Invalid Resource", 400)
+		return
+	}
+
+	stateLock.Lock()
+	defer stateLock.Unlock()
+
+	// FIX: Verify Owner
+	var owner string
+	err = db.QueryRow("SELECT owner_uuid FROM colonies WHERE id=?", req.ColonyID).Scan(&owner)
+	if err != nil || owner != userID {
+		http.Error(w, "Access Denied", 403)
 		return
 	}
 
@@ -530,20 +584,18 @@ func handleBankBurn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	stateLock.Lock()
 	tx, _ := db.Begin()
 
 	res, _ := tx.Exec(fmt.Sprintf("UPDATE colonies SET %s = %s - ? WHERE id=? AND %s >= ?", req.Item, req.Item, req.Item), req.Amount, req.ColonyID, req.Amount)
 
 	if n, _ := res.RowsAffected(); n == 0 {
 		tx.Rollback()
-		stateLock.Unlock()
 		http.Error(w, "Insufficient Funds", 400)
 		return
 	}
-	tx.Exec("UPDATE users SET credits = credits + ? WHERE id=?", payout, req.UserID)
+	// Use global_uuid for credits update
+	tx.Exec("UPDATE users SET credits = credits + ? WHERE global_uuid=?", payout, userID)
 	tx.Commit()
-	stateLock.Unlock()
 
 	w.Write([]byte(fmt.Sprintf("Burned %d for %d credits", req.Amount, payout)))
 }
@@ -593,6 +645,13 @@ func handleConstruct(w http.ResponseWriter, r *http.Request) {
 	}
 	json.NewDecoder(r.Body).Decode(&req)
 
+	// FIX: Auth
+	userID, err := authenticate(r)
+	if err != nil {
+		http.Error(w, "Unauthorized", 401)
+		return
+	}
+
 	if !validateModules(req.HullClass, req.Modules) {
 		http.Error(w, "Invalid Configuration", 400)
 		return
@@ -612,12 +671,19 @@ func handleConstruct(w http.ResponseWriter, r *http.Request) {
 
 	var c Colony
 	var bJson string
-	err := db.QueryRow("SELECT buildings_json, system_id, owner_uuid, iron, gold, food, pop_laborers FROM colonies WHERE id=?", req.ColonyID).Scan(&bJson, &c.SystemID, &c.OwnerUUID, &c.Iron, &c.Gold, &c.Food, &c.PopLaborers)
+	err = db.QueryRow("SELECT buildings_json, system_id, owner_uuid, iron, gold, food, pop_laborers FROM colonies WHERE id=?", req.ColonyID).Scan(&bJson, &c.SystemID, &c.OwnerUUID, &c.Iron, &c.Gold, &c.Food, &c.PopLaborers)
 
 	if err != nil {
 		http.Error(w, "Colony Not Found", 404)
 		return
 	}
+	
+	// FIX: Owner Check
+	if c.OwnerUUID != userID {
+		http.Error(w, "Access Denied", 403)
+		return
+	}
+
 	json.Unmarshal([]byte(bJson), &c.Buildings)
 
 	if c.Buildings["shipyard"] < 1 {
@@ -627,6 +693,7 @@ func handleConstruct(w http.ResponseWriter, r *http.Request) {
 
 	neededCrew := 50
 
+	// FIX: Validate Payload Values (Ensure no negatives)
 	payloadFood := req.Payload.Resources["food"]
 	payloadIron := req.Payload.Resources["iron"]
 	payloadLabs := req.Payload.PopLaborers
@@ -634,6 +701,14 @@ func handleConstruct(w http.ResponseWriter, r *http.Request) {
 	if payloadFood < 0 || payloadIron < 0 || payloadLabs < 0 {
 		http.Error(w, "Negative Payload", 400)
 		return
+	}
+	
+	// Defensive check against other keys in the map
+	for _, v := range req.Payload.Resources {
+		if v < 0 {
+			http.Error(w, "Negative Payload Resource", 400)
+			return
+		}
 	}
 
 	if c.Iron < (totalIron+payloadIron) ||
@@ -665,6 +740,13 @@ func handleBuild(w http.ResponseWriter, r *http.Request) {
 	}
 	json.NewDecoder(r.Body).Decode(&req)
 
+	// FIX: Auth
+	userID, err := authenticate(r)
+	if err != nil {
+		http.Error(w, "Unauthorized", 401)
+		return
+	}
+
 	if req.Amount <= 0 {
 		http.Error(w, "Invalid Amount", 400)
 		return
@@ -681,9 +763,15 @@ func handleBuild(w http.ResponseWriter, r *http.Request) {
 
 	var c Colony
 	var bJson string
-	err := db.QueryRow("SELECT buildings_json, iron, carbon FROM colonies WHERE id=?", req.ColonyID).Scan(&bJson, &c.Iron, &c.Carbon)
+	err = db.QueryRow("SELECT buildings_json, iron, carbon, owner_uuid FROM colonies WHERE id=?", req.ColonyID).Scan(&bJson, &c.Iron, &c.Carbon, &c.OwnerUUID)
 	if err != nil {
 		http.Error(w, "Colony Not Found", 404)
+		return
+	}
+
+	// FIX: Owner Check
+	if c.OwnerUUID != userID {
+		http.Error(w, "Access Denied", 403)
 		return
 	}
 
@@ -719,15 +807,28 @@ func handleDeploy(w http.ResponseWriter, r *http.Request) {
 	}
 	json.NewDecoder(r.Body).Decode(&req)
 
+	// FIX: Auth
+	userID, err := authenticate(r)
+	if err != nil {
+		http.Error(w, "Unauthorized", 401)
+		return
+	}
+
 	stateLock.Lock()
 	defer stateLock.Unlock()
 
 	var sysID, owner string
 	var modJson, payloadJson string
-	err := db.QueryRow("SELECT origin_system, owner_uuid, modules_json, payload_json FROM fleets WHERE id=? AND status='ORBIT'", req.FleetID).Scan(&sysID, &owner, &modJson, &payloadJson)
+	err = db.QueryRow("SELECT origin_system, owner_uuid, modules_json, payload_json FROM fleets WHERE id=? AND status='ORBIT'", req.FleetID).Scan(&sysID, &owner, &modJson, &payloadJson)
 
 	if err != nil {
 		http.Error(w, "Fleet Not Available", 400)
+		return
+	}
+
+	// FIX: Owner Check
+	if owner != userID {
+		http.Error(w, "Access Denied", 403)
 		return
 	}
 
@@ -790,18 +891,10 @@ func handleDeploy(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleState(w http.ResponseWriter, r *http.Request) {
-	userUUID := r.Header.Get("X-User-UUID")
-	token := r.Header.Get("X-Session-Token")
-
-	if userUUID == "" || token == "" {
-		http.Error(w, "Missing Auth Headers", 401)
-		return
-	}
-
-	var count int
-	err := db.QueryRow("SELECT count(*) FROM users WHERE global_uuid=? AND session_token=?", userUUID, token).Scan(&count)
-	if err != nil || count == 0 {
-		http.Error(w, "Access Denied (Invalid Session)", 403)
+	// FIX: Auth
+	userID, err := authenticate(r)
+	if err != nil {
+		http.Error(w, "Unauthorized", 401)
 		return
 	}
 
@@ -812,7 +905,7 @@ func handleState(w http.ResponseWriter, r *http.Request) {
 	}
 	var resp Resp
 
-	rows, _ := db.Query(`SELECT id, name, system_id, parent_colony_id, pop_laborers, pop_specialists, pop_elites, food, water, iron, carbon, gold, steel, wine, buildings_json, stability_current FROM colonies WHERE owner_uuid=?`, userUUID)
+	rows, _ := db.Query(`SELECT id, name, system_id, parent_colony_id, pop_laborers, pop_specialists, pop_elites, food, water, iron, carbon, gold, steel, wine, buildings_json, stability_current FROM colonies WHERE owner_uuid=?`, userID)
 	defer rows.Close()
 	for rows.Next() {
 		var c Colony
@@ -822,7 +915,7 @@ func handleState(w http.ResponseWriter, r *http.Request) {
 		resp.Colonies = append(resp.Colonies, c)
 	}
 
-	fRows, _ := db.Query(`SELECT id, status, origin_system, dest_system, arrival_tick, fuel, hull_class, modules_json, payload_json FROM fleets WHERE owner_uuid=?`, userUUID)
+	fRows, _ := db.Query(`SELECT id, status, origin_system, dest_system, arrival_tick, fuel, hull_class, modules_json, payload_json FROM fleets WHERE owner_uuid=?`, userID)
 	defer fRows.Close()
 	for fRows.Next() {
 		var f Fleet
@@ -835,7 +928,7 @@ func handleState(w http.ResponseWriter, r *http.Request) {
 		resp.Fleets = append(resp.Fleets, f)
 	}
 
-	db.QueryRow("SELECT credits FROM users WHERE global_uuid=?", userUUID).Scan(&resp.Credits)
+	db.QueryRow("SELECT credits FROM users WHERE global_uuid=?", userID).Scan(&resp.Credits)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
@@ -850,6 +943,13 @@ func handleCargoTransfer(w http.ResponseWriter, r *http.Request) {
         Transfers map[string]int `json:"transfers"` // +Amount = To Fleet, -Amount = To Colony
     }
     json.NewDecoder(r.Body).Decode(&req)
+
+	// FIX: Auth
+	userID, err := authenticate(r)
+	if err != nil {
+		http.Error(w, "Unauthorized", 401)
+		return
+	}
 
     stateLock.Lock()
     defer stateLock.Unlock()
@@ -868,6 +968,12 @@ func handleCargoTransfer(w http.ResponseWriter, r *http.Request) {
     }
 
     // B. Security Checks
+	// FIX: Owner Check
+	if f.OwnerUUID != userID || c.OwnerUUID != userID {
+		http.Error(w, "Access Denied", 403)
+		return
+	}
+
     // 1. Must be owned by same player (or implement trade permissions later)
     // 2. Fleet must be in ORBIT at the Colony's System
     if f.OwnerUUID != c.OwnerUUID || f.Status != "ORBIT" || f.OriginSystem != c.SystemID {
@@ -925,6 +1031,15 @@ func handleCargoTransfer(w http.ResponseWriter, r *http.Request) {
         // Update Fleet Memory
         f.Payload.Resources[item] += amount
         
+		// FIX: Memory Overflow check for Cargo Transfer
+		// Although unlikely with int, good practice.
+		// Since we updated payload in memory, if it wrapped, it's bad.
+		if f.Payload.Resources[item] < 0 {
+			tx.Rollback()
+			http.Error(w, "Cargo Overflow", 500)
+			return
+		}
+
         // Update Colony DB
         // "food = food - amount" works for both load (+) and unload (-)
         query := fmt.Sprintf("UPDATE colonies SET %s = %s - ? WHERE id=?", item, item)
@@ -952,16 +1067,29 @@ func handleSetPolicy(w http.ResponseWriter, r *http.Request) {
     }
     json.NewDecoder(r.Body).Decode(&req)
 
+	// FIX: Auth
+	userID, err := authenticate(r)
+	if err != nil {
+		http.Error(w, "Unauthorized", 401)
+		return
+	}
+
     stateLock.Lock()
     defer stateLock.Unlock()
 
     // Verify Ownership
     var owner string
-    err := db.QueryRow("SELECT owner_uuid FROM colonies WHERE id=?", req.ColonyID).Scan(&owner)
+    err = db.QueryRow("SELECT owner_uuid FROM colonies WHERE id=?", req.ColonyID).Scan(&owner)
     if err != nil { 
         http.Error(w, "Colony Not Found", 404)
         return
     }
+
+	// FIX: Owner Check
+	if owner != userID {
+		http.Error(w, "Access Denied", 403)
+		return
+	}
 
     // Save to DB
     policyJson, _ := json.Marshal(req.Policies)

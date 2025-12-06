@@ -11,6 +11,20 @@ import (
 	"time"
 )
 
+// --- Constants ---
+const (
+	UniverseSize = 1000000 // Limit coordinates to +/- 1,000,000
+	MaxResource  = 2000000000 // Cap resources to ~2 Billion to prevent int32/int64 issues
+)
+
+// --- Helper: Safe Addition ---
+func safeAdd(current, amount int) int {
+	if amount > 0 && current > MaxResource-amount {
+		return MaxResource
+	}
+	return current + amount
+}
+
 // --- World Gen (Deterministic) ---
 
 func GetEfficiency(planetID int, resource string) float64 {
@@ -31,6 +45,10 @@ type SectorPotential struct {
 }
 
 func GetSectorData(x, y, z int) SectorPotential {
+	if x > UniverseSize || x < -UniverseSize || y > UniverseSize || y < -UniverseSize || z > UniverseSize || z < -UniverseSize {
+		return SectorPotential{HasSystem: false}
+	}
+
 	input := fmt.Sprintf("%s-%d-%d-%d", GenesisHash, x, y, z)
 	hash := hashBLAKE3([]byte(input))
 	hashBytes, _ := hex.DecodeString(hash)
@@ -117,6 +135,11 @@ func resolveDeepSpaceArrival(fleet Fleet) {
 		}
 	}
 
+	if x > UniverseSize || x < -UniverseSize || y > UniverseSize || y < -UniverseSize || z > UniverseSize || z < -UniverseSize {
+		InfoLog.Printf("🚫 Fleet %d attempted to reach the Far Lands (%d,%d,%d). Simulation halted for safety.", fleet.ID, x, y, z)
+		return
+	}
+
 	var exists int
 	db.QueryRow("SELECT count(*) FROM solar_systems WHERE x=? AND y=? AND z=?", x, y, z).Scan(&exists)
 	if exists > 0 {
@@ -149,7 +172,7 @@ func processIndustry(c *Colony) {
 		if c.Iron >= inputIron && c.Carbon >= inputCarbon {
 			c.Iron -= inputIron
 			c.Carbon -= inputCarbon
-			c.Steel += outputSteel
+			c.Steel = safeAdd(c.Steel, outputSteel) // Use safeAdd
 		}
 	}
 
@@ -161,13 +184,12 @@ func processIndustry(c *Colony) {
 
 		if c.Vegetation >= inputVeg {
 			c.Vegetation -= inputVeg
-			c.Wine += outputWine
+			c.Wine = safeAdd(c.Wine, outputWine) // Use safeAdd
 		}
 	}
 }
 
 func resolveSectorConflict(currentTick int64) {
-	// 1. Fleet vs Fleet (Space Combat)
 	rows, _ := db.Query("SELECT id, owner_uuid, origin_system, hull_class, modules_json FROM fleets WHERE status='ORBIT'")
 	defer rows.Close()
 
@@ -223,7 +245,6 @@ func resolveSectorConflict(currentTick int64) {
 		}
 	}
 
-	// 2. Orbital Bombardment
 	bRows, _ := db.Query(`SELECT f.id, f.owner_uuid, f.origin_system, f.modules_json 
 	                      FROM fleets f 
 	                      WHERE f.status='ORBIT' AND f.modules_json LIKE '%bomb_bay%'`)
@@ -323,7 +344,6 @@ func tickWorld() {
 	current := atomic.AddInt64(&CurrentTick, 1)
 	db.Exec("INSERT INTO transaction_log (tick, action_type) VALUES (?, 'TICK')", current)
 
-	// 1. Process Fleets
 	fRows, _ := db.Query("SELECT id, dest_system, status, hull_class, modules_json FROM fleets WHERE arrival_tick <= ? AND status='TRANSIT'", current)
 	defer fRows.Close()
 
@@ -337,10 +357,8 @@ func tickWorld() {
 		db.Exec("UPDATE fleets SET status='ORBIT' WHERE id=?", f.ID)
 	}
 
-	// 2. Conflict Resolution
 	resolveSectorConflict(current)
 
-	// 3. Process Colonies
 	rows, err := db.Query(`SELECT id, buildings_json, policies_json, pop_laborers, pop_specialists, pop_elites, 
 	                       food, water, carbon, gold, fuel, steel, wine, vegetation, stability_current, stability_target, iron 
 	                       FROM colonies`)
@@ -365,32 +383,31 @@ func tickWorld() {
 			&c.StabilityCurrent, &c.StabilityTarget, &c.Iron)
 		json.Unmarshal([]byte(bJson), &c.Buildings)
 		
-		// --- NEW: POLICY LOGIC ---
 		c.Policies = make(map[string]bool)
 		if pJson != "" {
 			json.Unmarshal([]byte(pJson), &c.Policies)
 		}
 
 		foodEff := GetEfficiency(c.ID, "food")
-		c.Food += int(float64(c.Buildings["farm"]*5) * foodEff)
-		c.Water += int(float64(c.Buildings["well"]*5) * foodEff)
+		
+		// Use safeAdd for production (Fix: prevents overflow)
+		c.Food = safeAdd(c.Food, int(float64(c.Buildings["farm"]*5)*foodEff))
+		c.Water = safeAdd(c.Water, int(float64(c.Buildings["well"]*5)*foodEff))
 
 		processIndustry(&c)
 
-		// 2. Calculate Modifiers
 		foodConsumptionRate := 1.0
 		stabilityMod := 0.0
 		
 		if c.Policies["rationing"] {
-			foodConsumptionRate = 0.5       // Eat half as much
-			stabilityMod -= 2.0             // People are unhappy
+			foodConsumptionRate = 0.5       
+			stabilityMod -= 2.0             
 		}
 		if c.Policies["propaganda"] {
-			stabilityMod += 1.0             // Artificial happiness
-			c.Gold -= 10                    // Costs gold per tick
+			stabilityMod += 1.0             
+			c.Gold -= 10                    
 		}
 
-		// 3. Apply Consumption
 		reqFood := int(float64(c.PopLaborers * 1 + c.PopSpecialists * 2 + c.PopElites * 5) * foodConsumptionRate)
 		reqCarbon := c.PopSpecialists / 10
 		reqWine := c.PopElites / 10
@@ -421,7 +438,6 @@ func tickWorld() {
 			}
 		}
 
-		// 4. Apply Stability
 		c.StabilityTarget += stabilityMod
 
 		diff := c.StabilityTarget - c.StabilityCurrent
