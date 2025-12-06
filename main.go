@@ -170,6 +170,8 @@ func main() {
 	mux.HandleFunc("/api/fleet/launch", handleFleetLaunch)
 	mux.HandleFunc("/api/state", handleState)
 	mux.HandleFunc("/api/scan", handleScan) // Add scan handler
+	mux.HandleFunc("/api/fleet/transfer", handleCargoTransfer) // New route
+	mux.HandleFunc("/api/colony/policy", handleSetPolicy) // New route
 
 	mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]interface{}{

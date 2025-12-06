@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"net/http" // Removed unused "math/rand"
+	"net/http"
 	"os"
 	"regexp"
 	"strconv"
@@ -59,7 +59,6 @@ func processImmigration() {
 		Peers[req.UUID] = newPeer
 		peerLock.Unlock()
 		
-		// Recalculate outside the lock to avoid potential deadlock issues discussed in consensus.go
 		go recalculateLeader()
 	}
 }
@@ -251,17 +250,13 @@ func handleSyncLedger(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(history)
 }
 
-// New Federation Handler: Reputation Query
-// Allows peers to query our local trust score for a specific target UUID.
 func handleReputationQuery(w http.ResponseWriter, r *http.Request) {
-	// 1. Parse the Target UUID
 	target := r.URL.Query().Get("uuid")
 	if target == "" {
 		http.Error(w, "Missing 'uuid' param", 400)
 		return
 	}
 
-	// 2. Read Local Opinion
 	peerLock.RLock()
 	peer, known := Peers[target]
 	peerLock.RUnlock()
@@ -271,7 +266,6 @@ func handleReputationQuery(w http.ResponseWriter, r *http.Request) {
 		score = peer.Reputation
 	}
 
-	// 3. Return JSON
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]float64{"score": score})
 }
@@ -341,7 +335,6 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	found := false
 	var sysXNew, sysYNew, sysZNew int
 
-	// Random Start
 	for i := 0; i < 50; i++ {
 		uuidBytes, _ := hex.DecodeString(userUUID)
 		offX := int(uuidBytes[0]%40) - 20
@@ -352,7 +345,6 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 		sysYNew = ServerLoc[1] + offY
 		sysZNew = ServerLoc[2] + offZ
 
-		// Use Universal Truth to find valid start
 		potential := GetSectorData(sysXNew, sysYNew, sysZNew)
 
 		if potential.HasSystem && potential.SystemType == "G2V" {
@@ -362,7 +354,6 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !found {
-		// Fallback to absolute coords near server loc
 		sysID = fmt.Sprintf("sys-%d-%d-%d", ServerLoc[0], ServerLoc[1], ServerLoc[2])
 		sysXNew, sysYNew, sysZNew = ServerLoc[0], ServerLoc[1], ServerLoc[2]
 	}
@@ -374,7 +365,6 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	db.Exec(`INSERT INTO colonies (system_id, owner_uuid, name, pop_laborers, food, iron, buildings_json) 
 	         VALUES (?, ?, ?, 100, 2000, 1000, ?)`, sysID, userUUID, req.Username+" Prime", startBuilds)
 
-	// Updated Fleet Insert: Colonizer Hull with Warp Drive
 	modules := `["warp_drive", "warp_drive", "colony_kit"]`
 	db.Exec(`INSERT INTO fleets (owner_uuid, status, origin_system, hull_class, modules_json, fuel) 
 			 VALUES (?, 'ORBIT', ?, 'Colonizer', ?, 2000)`, userUUID, sysID, modules)
@@ -389,7 +379,6 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Scan Sector (Information Economy)
 func handleScan(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		TargetX int `json:"x"`
@@ -405,7 +394,6 @@ func handleScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. REVEAL THE TRUTH
 	data := GetSectorData(req.TargetX, req.TargetY, req.TargetZ)
 
 	if !data.HasSystem {
@@ -413,7 +401,6 @@ func handleScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3. RETURN INTEL
 	json.NewEncoder(w).Encode(data)
 }
 
@@ -429,7 +416,6 @@ func handleFleetLaunch(w http.ResponseWriter, r *http.Request) {
 
 	var f Fleet
 	var currentSys string
-	// Updated Query to fetch modular data
 	var modJson string
 	err := db.QueryRow("SELECT owner_uuid, origin_system, fuel, status, hull_class, modules_json FROM fleets WHERE id=?", req.FleetID).Scan(&f.OwnerUUID, &currentSys, &f.Fuel, &f.Status, &f.HullClass, &modJson)
 
@@ -456,9 +442,6 @@ func handleFleetLaunch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	mass := 1000
-	// FIX: Loop for mass calc was missing variable usage causing compile error?
-	// It was `for _, m := range f.Modules` but unused `m`.
-	// Corrected to use _, _ or just loop range.
 	for range f.Modules {
 		mass += 100
 	}
@@ -511,7 +494,6 @@ var validResources = map[string]bool{
 	"food": true, "water": true, "iron": true, "carbon": true,
 	"gold": true, "platinum": true, "uranium": true, "diamond": true,
 	"vegetation": true, "oxygen": true, "fuel": true,
-	// New ones
 	"steel": true, "wine": true,
 }
 
@@ -566,7 +548,6 @@ func handleBankBurn(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(fmt.Sprintf("Burned %d for %d credits", req.Amount, payout)))
 }
 
-// Logic for Validating Modules
 func validateModules(hullClass string, modules []string) bool {
 	hull, valid := HullRegistry[hullClass]
 	if !valid {
@@ -604,7 +585,6 @@ func validateModules(hullClass string, modules []string) bool {
 }
 
 func handleConstruct(w http.ResponseWriter, r *http.Request) {
-	// Updated: Now accepts Payload for "Seed" colonization
 	var req struct {
 		ColonyID  int          `json:"colony_id"`
 		HullClass string       `json:"hull_class"`
@@ -613,13 +593,11 @@ func handleConstruct(w http.ResponseWriter, r *http.Request) {
 	}
 	json.NewDecoder(r.Body).Decode(&req)
 
-	// 1. Validate Slots
 	if !validateModules(req.HullClass, req.Modules) {
 		http.Error(w, "Invalid Configuration", 400)
 		return
 	}
 
-	// 2. Calculate Hull Cost
 	totalIron := 1000
 	totalGold := 0
 	for _, mod := range req.Modules {
@@ -647,10 +625,8 @@ func handleConstruct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3. Calculate Payload Cost (Deduct from Colony)
-	neededCrew := 50 // Base crew
+	neededCrew := 50
 
-	// Add Payload Requirements
 	payloadFood := req.Payload.Resources["food"]
 	payloadIron := req.Payload.Resources["iron"]
 	payloadLabs := req.Payload.PopLaborers
@@ -660,7 +636,6 @@ func handleConstruct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Total Check
 	if c.Iron < (totalIron+payloadIron) ||
 		c.Gold < totalGold ||
 		c.Food < payloadFood ||
@@ -669,12 +644,11 @@ func handleConstruct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 4. Execution
 	db.Exec("UPDATE colonies SET iron=iron-?, gold=gold-?, food=food-?, pop_laborers=pop_laborers-? WHERE id=?",
 		totalIron+payloadIron, totalGold, payloadFood, neededCrew+payloadLabs, req.ColonyID)
 
 	modJson, _ := json.Marshal(req.Modules)
-	payloadJson, _ := json.Marshal(req.Payload) // Serialize Seed
+	payloadJson, _ := json.Marshal(req.Payload)
 
 	db.Exec(`INSERT INTO fleets (owner_uuid, status, fuel, origin_system, dest_system, hull_class, modules_json, payload_json) 
 			 VALUES (?, 'ORBIT', ?, ?, ?, ?, ?, ?)`,
@@ -780,9 +754,7 @@ func handleDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// UNPACK PAYLOAD
 	var payload FleetPayload
-	// Default values if empty payload
 	startFood := 100
 	startPop := 100
 	startIron := 100
@@ -797,9 +769,8 @@ func handleDeploy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	bJson, _ := json.Marshal(map[string]int{"urban_housing": 10}) // Basic shelter
+	bJson, _ := json.Marshal(map[string]int{"urban_housing": 10})
 
-	// Determine Parent
 	var parentID int
 	db.QueryRow("SELECT id FROM colonies WHERE owner_uuid=? LIMIT 1", owner).Scan(&parentID)
 
@@ -841,7 +812,6 @@ func handleState(w http.ResponseWriter, r *http.Request) {
 	}
 	var resp Resp
 
-	// EMPIRE VIEW: Return ALL colonies
 	rows, _ := db.Query(`SELECT id, name, system_id, parent_colony_id, pop_laborers, pop_specialists, pop_elites, food, water, iron, carbon, gold, steel, wine, buildings_json, stability_current FROM colonies WHERE owner_uuid=?`, userUUID)
 	defer rows.Close()
 	for rows.Next() {
@@ -852,7 +822,6 @@ func handleState(w http.ResponseWriter, r *http.Request) {
 		resp.Colonies = append(resp.Colonies, c)
 	}
 
-	// Updated State Query for Modules + Payload
 	fRows, _ := db.Query(`SELECT id, status, origin_system, dest_system, arrival_tick, fuel, hull_class, modules_json, payload_json FROM fleets WHERE owner_uuid=?`, userUUID)
 	defer fRows.Close()
 	for fRows.Next() {
@@ -870,4 +839,137 @@ func handleState(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+// 1. LOGISTICS HANDLER (The Industrialist Loop)
+// Allows moving resources between a Colony and a Fleet in orbit.
+func handleCargoTransfer(w http.ResponseWriter, r *http.Request) {
+    var req struct {
+        FleetID   int            `json:"fleet_id"`
+        ColonyID  int            `json:"colony_id"`
+        Transfers map[string]int `json:"transfers"` // +Amount = To Fleet, -Amount = To Colony
+    }
+    json.NewDecoder(r.Body).Decode(&req)
+
+    stateLock.Lock()
+    defer stateLock.Unlock()
+
+    // A. Validation: Fetch both entities
+    var f Fleet
+    var fPayloadJson string
+    errF := db.QueryRow("SELECT owner_uuid, origin_system, status, payload_json FROM fleets WHERE id=?", req.FleetID).Scan(&f.OwnerUUID, &f.OriginSystem, &f.Status, &fPayloadJson)
+    
+    var c Colony
+    errC := db.QueryRow("SELECT owner_uuid, system_id, food, iron, steel, wine FROM colonies WHERE id=?", req.ColonyID).Scan(&c.OwnerUUID, &c.SystemID, &c.Food, &c.Iron, &c.Steel, &c.Wine)
+
+    if errF != nil || errC != nil {
+        http.Error(w, "Invalid Fleet or Colony ID", 404)
+        return
+    }
+
+    // B. Security Checks
+    // 1. Must be owned by same player (or implement trade permissions later)
+    // 2. Fleet must be in ORBIT at the Colony's System
+    if f.OwnerUUID != c.OwnerUUID || f.Status != "ORBIT" || f.OriginSystem != c.SystemID {
+        http.Error(w, "Transfer Rejected: Invalid Location or Ownership", 403)
+        return
+    }
+
+    // C. Parse Fleet Payload
+    // We reuse the FleetPayload struct, but treating it as "Cargo" now
+    if fPayloadJson != "" {
+        json.Unmarshal([]byte(fPayloadJson), &f.Payload)
+    }
+    if f.Payload.Resources == nil {
+        f.Payload.Resources = make(map[string]int)
+    }
+
+    // D. Execute Transfers (Atomic Transaction Logic)
+    // We map "item_name" -> &ColonyField to simplify logic, or use switch/case
+    for item, amount := range req.Transfers {
+        if amount == 0 { continue }
+        
+        // Get current Colony amount
+        colonyVal := 0
+        switch item {
+        case "food": colonyVal = c.Food
+        case "iron": colonyVal = c.Iron
+        case "steel": colonyVal = c.Steel
+        case "wine": colonyVal = c.Wine
+        default: continue // Skip invalid items
+        }
+
+        // Get current Fleet amount
+        fleetVal := f.Payload.Resources[item]
+
+        if amount > 0 {
+            // LOADING: Colony -> Fleet
+            if colonyVal < amount {
+                http.Error(w, fmt.Sprintf("Insufficient %s in Colony", item), 400)
+                return 
+            }
+        } else {
+            // UNLOADING: Fleet -> Colony (Amount is negative, so -(-10) = +10)
+            qtyToUnload := -amount
+            if fleetVal < qtyToUnload {
+                http.Error(w, fmt.Sprintf("Insufficient %s in Fleet", item), 400)
+                return
+            }
+        }
+    }
+
+    // E. Commit Changes
+    tx, _ := db.Begin()
+    
+    for item, amount := range req.Transfers {
+        // Update Fleet Memory
+        f.Payload.Resources[item] += amount
+        
+        // Update Colony DB
+        // "food = food - amount" works for both load (+) and unload (-)
+        query := fmt.Sprintf("UPDATE colonies SET %s = %s - ? WHERE id=?", item, item)
+        if _, err := tx.Exec(query, amount, req.ColonyID); err != nil {
+            tx.Rollback()
+            http.Error(w, "Database Error during transfer", 500)
+            return
+        }
+    }
+
+    // Save Fleet Payload
+    newPayloadJson, _ := json.Marshal(f.Payload)
+    tx.Exec("UPDATE fleets SET payload_json = ? WHERE id=?", string(newPayloadJson), req.FleetID)
+    
+    tx.Commit()
+    w.Write([]byte("Cargo Transfer Complete"))
+}
+
+// 2. POLICY HANDLER (The Political Loop)
+// Allows setting "Austerity", "Double Rations", etc.
+func handleSetPolicy(w http.ResponseWriter, r *http.Request) {
+    var req struct {
+        ColonyID int             `json:"colony_id"`
+        Policies map[string]bool `json:"policies"`
+    }
+    json.NewDecoder(r.Body).Decode(&req)
+
+    stateLock.Lock()
+    defer stateLock.Unlock()
+
+    // Verify Ownership
+    var owner string
+    err := db.QueryRow("SELECT owner_uuid FROM colonies WHERE id=?", req.ColonyID).Scan(&owner)
+    if err != nil { 
+        http.Error(w, "Colony Not Found", 404)
+        return
+    }
+
+    // Save to DB
+    policyJson, _ := json.Marshal(req.Policies)
+    _, err = db.Exec("UPDATE colonies SET policies_json=? WHERE id=?", string(policyJson), req.ColonyID)
+    
+    if err != nil {
+        http.Error(w, "Failed to set policies", 500)
+        return
+    }
+    w.Write([]byte("Policies Updated"))
 }

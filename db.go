@@ -62,14 +62,14 @@ func initDB() {
 		vegetation INTEGER DEFAULT 0, oxygen INTEGER DEFAULT 1000,
 		fuel INTEGER DEFAULT 0,
 		
-		-- New Resources for Industry
 		steel INTEGER DEFAULT 0,
 		wine INTEGER DEFAULT 0,
 		
 		stability_current REAL DEFAULT 100.0,
 		stability_target REAL DEFAULT 100.0,
 		martial_law BOOLEAN DEFAULT 0,
-		buildings_json TEXT
+		buildings_json TEXT,
+		policies_json TEXT DEFAULT '{}' -- New: Policies
 	);
 
 	CREATE TABLE IF NOT EXISTS fleets (
@@ -84,9 +84,8 @@ func initDB() {
 		
 		hull_class TEXT,
 		modules_json TEXT,
-		payload_json TEXT, -- Stores the "Seed" resources
+		payload_json TEXT, 
 		
-		-- Legacy fields kept for schema compatibility
 		ark_ship INTEGER DEFAULT 0, 
 		fighters INTEGER DEFAULT 0,
 		frigates INTEGER DEFAULT 0,
@@ -113,14 +112,10 @@ func initDB() {
 	`
 	if _, err := db.Exec(schema); err != nil { panic(err) }
 
-	// Migrations for existing databases
-	// We use 'ignore' errors style for simplicity in this MVP, 
-	// or check if columns exist. SQLite 'ADD COLUMN' is safe to run if it doesn't exist, 
-	// but standard SQL throws error if exists.
-	// For robustness in this prompt context, we just attempt and ignore error.
 	db.Exec("ALTER TABLE colonies ADD COLUMN parent_colony_id INTEGER DEFAULT 0")
 	db.Exec("ALTER TABLE colonies ADD COLUMN steel INTEGER DEFAULT 0")
 	db.Exec("ALTER TABLE colonies ADD COLUMN wine INTEGER DEFAULT 0")
+	db.Exec("ALTER TABLE colonies ADD COLUMN policies_json TEXT DEFAULT '{}'")
 	db.Exec("ALTER TABLE fleets ADD COLUMN payload_json TEXT")
 
 	initIdentity()

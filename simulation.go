@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	mrand "math/rand" // Added import for chance calculation in combat
+	mrand "math/rand" 
 	"sync/atomic"
 	"time"
 )
@@ -341,7 +341,7 @@ func tickWorld() {
 	resolveSectorConflict(current)
 
 	// 3. Process Colonies
-	rows, err := db.Query(`SELECT id, buildings_json, pop_laborers, pop_specialists, pop_elites, 
+	rows, err := db.Query(`SELECT id, buildings_json, policies_json, pop_laborers, pop_specialists, pop_elites, 
 	                       food, water, carbon, gold, fuel, steel, wine, vegetation, stability_current, stability_target 
 	                       FROM colonies`)
 	if err != nil {
@@ -359,11 +359,18 @@ func tickWorld() {
 
 	for rows.Next() {
 		var c Colony
-		var bJson string
-		rows.Scan(&c.ID, &bJson, &c.PopLaborers, &c.PopSpecialists, &c.PopElites,
+		var bJson, pJson string
+		rows.Scan(&c.ID, &bJson, &pJson, &c.PopLaborers, &c.PopSpecialists, &c.PopElites,
 			&c.Food, &c.Water, &c.Carbon, &c.Gold, &c.Fuel, &c.Steel, &c.Wine, &c.Vegetation,
 			&c.StabilityCurrent, &c.StabilityTarget)
 		json.Unmarshal([]byte(bJson), &c.Buildings)
+		
+		// --- NEW: POLICY LOGIC ---
+		// 1. Parse Policies
+		c.Policies = make(map[string]bool)
+		if pJson != "" {
+			json.Unmarshal([]byte(pJson), &c.Policies)
+		}
 
 		foodEff := GetEfficiency(c.ID, "food")
 		c.Food += int(float64(c.Buildings["farm"]*5) * foodEff)
@@ -371,7 +378,21 @@ func tickWorld() {
 
 		processIndustry(&c)
 
-		reqFood := (c.PopLaborers * 1) + (c.PopSpecialists * 2) + (c.PopElites * 5)
+		// 2. Calculate Modifiers
+		foodConsumptionRate := 1.0
+		stabilityMod := 0.0
+		
+		if c.Policies["rationing"] {
+			foodConsumptionRate = 0.5       // Eat half as much
+			stabilityMod -= 2.0             // People are unhappy
+		}
+		if c.Policies["propaganda"] {
+			stabilityMod += 1.0             // Artificial happiness
+			c.Gold -= 10                    // Costs gold per tick
+		}
+
+		// 3. Apply Consumption
+		reqFood := int(float64(c.PopLaborers * 1 + c.PopSpecialists * 2 + c.PopElites * 5) * foodConsumptionRate)
 		reqCarbon := c.PopSpecialists / 10
 		reqWine := c.PopElites / 10
 
@@ -400,6 +421,9 @@ func tickWorld() {
 				c.StabilityTarget -= 5.0
 			}
 		}
+
+		// 4. Apply Stability
+		c.StabilityTarget += stabilityMod
 
 		diff := c.StabilityTarget - c.StabilityCurrent
 		c.StabilityCurrent += diff * 0.05

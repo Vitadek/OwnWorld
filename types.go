@@ -43,9 +43,10 @@ type Colony struct {
 	ID            int            `json:"id"`
 	SystemID      string         `json:"system_id"`
 	OwnerUUID     string         `json:"owner_uuid"`
-	ParentID      int            `json:"parent_id"` // Track heritage
+	ParentID      int            `json:"parent_id"` 
 	Name          string         `json:"name"`
 	Buildings     map[string]int `json:"buildings"`
+	Policies      map[string]bool `json:"policies"` // New field
 	
 	PopLaborers   int `json:"pop_laborers"`
 	PopSpecialists int `json:"pop_specialists"`
@@ -63,7 +64,6 @@ type Colony struct {
 	Oxygen     int `json:"oxygen"`
 	Fuel       int `json:"fuel"`
 	
-	// New Industry Resources
 	Steel      int `json:"steel"`
 	Wine       int `json:"wine"`
 	
@@ -72,15 +72,13 @@ type Colony struct {
 	MartialLaw       bool    `json:"martial_law"`
 }
 
-// Payload for Colonization
 type FleetPayload struct {
     PopLaborers   int            `json:"laborers"`
     PopSpecialists int           `json:"specialists"`
-    Resources     map[string]int `json:"resources"`   // Food, Iron, etc.
-    CultureBonus  float64        `json:"culture"`     // Inherited Stability
+    Resources     map[string]int `json:"resources"`   
+    CultureBonus  float64        `json:"culture"`     
 }
 
-// Updated Fleet Structure
 type Fleet struct {
 	ID           int      `json:"id"`
 	OwnerUUID    string   `json:"owner_uuid"`
@@ -93,10 +91,8 @@ type Fleet struct {
 	HullClass    string   `json:"hull_class"`
 	Modules      []string `json:"modules"`
 	
-	// The Seed Payload
 	Payload      FleetPayload `json:"payload"`
 	
-	// Legacy
 	ArkShip    int `json:"ark_ship"`
 	Fighters   int `json:"fighters"`
 	Frigates   int `json:"frigates"`
