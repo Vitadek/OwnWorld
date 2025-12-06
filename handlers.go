@@ -415,12 +415,21 @@ func handleScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+    // Fix B: Backend "Real" Scanner
+    var dbExists int
+    db.QueryRow("SELECT count(*) FROM solar_systems WHERE x=? AND y=? AND z=?", req.TargetX, req.TargetY, req.TargetZ).Scan(&dbExists)
+
 	data := GetSectorData(req.TargetX, req.TargetY, req.TargetZ)
 
-	if !data.HasSystem {
+	if !data.HasSystem && dbExists == 0 {
 		w.Write([]byte(`{"result": "void", "message": "No significant gravity well detected."}`))
 		return
 	}
+    
+    // If DB exists but procedural math said false (rare, but possible with manual overrides), force true
+    if dbExists > 0 {
+        data.HasSystem = true
+    }
 
 	json.NewEncoder(w).Encode(data)
 }
@@ -429,7 +438,7 @@ func handleFleetLaunch(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		FleetID      int    `json:"fleet_id"`
 		TargetSystem string `json:"target_system"`
-        TargetOrderID string `json:"target_order_id"` // New: Optional Order ID
+        TargetOrderID string `json:"target_order_id"` 
 	}
 	json.NewDecoder(r.Body).Decode(&req)
 
@@ -501,23 +510,25 @@ func handleFleetLaunch(w http.ResponseWriter, r *http.Request) {
 	}
 	distance := math.Sqrt(dist)
 
+    // FIX 1: Engine Logic (Count boosters and propellers)
 	warpCount := 0
+    engineCount := 0
 	for _, m := range f.Modules {
-		if m == "warp_drive" {
-			warpCount++
-		}
+		if m == "warp_drive" { warpCount++ }
+        if m == "booster" || m == "propeller" { engineCount++ }
 	}
 
 	travelTime := int64(distance)
 	reduction := float64(travelTime) * (0.2 * float64(warpCount))
+    reduction += float64(travelTime) * (0.05 * float64(engineCount)) // Standard engines add 5% speed each
 	travelTime -= int64(reduction)
+    
 	if travelTime < 1 {
 		travelTime = 1
 	}
 
 	arrivalTick := atomic.LoadInt64(&CurrentTick) + travelTime
 
-    // Only set order ID if provided, otherwise clear it
     targetOrderVal := sql.NullString{}
     if req.TargetOrderID != "" {
         targetOrderVal.String = req.TargetOrderID
@@ -850,7 +861,7 @@ func handleDeploy(w http.ResponseWriter, r *http.Request) {
 
 	var payload FleetPayload
 	startFood := 100
-	startPop := 100
+	startPop := 100 // Default base population (crew)
 	startIron := 100
 	bonusCulture := 0.0
 
@@ -858,7 +869,8 @@ func handleDeploy(w http.ResponseWriter, r *http.Request) {
 		if err := json.Unmarshal([]byte(payloadJson), &payload); err == nil {
 			startFood = payload.Resources["food"]
 			startIron = payload.Resources["iron"]
-			startPop = payload.PopLaborers
+            // Fix C: Patch Glitch (Base Crew + Passengers)
+			startPop = 50 + payload.PopLaborers 
 			bonusCulture = payload.CultureBonus
 		}
 	}
@@ -978,7 +990,7 @@ func handleCargoTransfer(w http.ResponseWriter, r *http.Request) {
     errF := db.QueryRow("SELECT owner_uuid, origin_system, status, payload_json FROM fleets WHERE id=?", req.FleetID).Scan(&f.OwnerUUID, &f.OriginSystem, &f.Status, &fPayloadJson)
     
     var c Colony
-    errC := db.QueryRow("SELECT owner_uuid, system_id, food, iron, steel, wine FROM colonies WHERE id=?", req.ColonyID).Scan(&c.OwnerUUID, &c.SystemID, &c.Food, &c.Iron, &c.Steel, &c.Wine)
+    errC := db.QueryRow("SELECT owner_uuid, system_id, food, iron, steel, wine, pop_laborers FROM colonies WHERE id=?", req.ColonyID).Scan(&c.OwnerUUID, &c.SystemID, &c.Food, &c.Iron, &c.Steel, &c.Wine, &c.PopLaborers)
 
     if errF != nil || errC != nil {
         http.Error(w, "Invalid Fleet or Colony ID", 404)
@@ -1006,16 +1018,22 @@ func handleCargoTransfer(w http.ResponseWriter, r *http.Request) {
         if amount == 0 { continue }
         
         colonyVal := 0
-        // Safe query helper later, for now simple switch
         switch item {
         case "food": colonyVal = c.Food
         case "iron": colonyVal = c.Iron
         case "steel": colonyVal = c.Steel
         case "wine": colonyVal = c.Wine
+        // Fix B: Ferrying People
+        case "laborers": colonyVal = c.PopLaborers
         default: continue
         }
 
-        fleetVal := f.Payload.Resources[item]
+        fleetVal := 0
+        if item == "laborers" {
+            fleetVal = f.Payload.PopLaborers
+        } else {
+            fleetVal = f.Payload.Resources[item]
+        }
 
         if amount > 0 { // Colony -> Fleet
             if colonyVal < amount {
@@ -1034,19 +1052,28 @@ func handleCargoTransfer(w http.ResponseWriter, r *http.Request) {
     tx, _ := db.Begin()
     
     for item, amount := range req.Transfers {
-        f.Payload.Resources[item] += amount
-        
-		if f.Payload.Resources[item] < 0 {
-			tx.Rollback()
-			http.Error(w, "Cargo Overflow", 500)
-			return
-		}
+        if item == "laborers" {
+            f.Payload.PopLaborers += amount
+            if f.Payload.PopLaborers < 0 { tx.Rollback(); http.Error(w, "Population Overflow", 500); return }
+            
+            if _, err := tx.Exec("UPDATE colonies SET pop_laborers = pop_laborers - ? WHERE id=?", amount, req.ColonyID); err != nil {
+                tx.Rollback(); http.Error(w, "Database Error during pop transfer", 500); return
+            }
+        } else {
+            f.Payload.Resources[item] += amount
+            
+            if f.Payload.Resources[item] < 0 {
+                tx.Rollback()
+                http.Error(w, "Cargo Overflow", 500)
+                return
+            }
 
-        query := fmt.Sprintf("UPDATE colonies SET %s = %s - ? WHERE id=?", item, item)
-        if _, err := tx.Exec(query, amount, req.ColonyID); err != nil {
-            tx.Rollback()
-            http.Error(w, "Database Error during transfer", 500)
-            return
+            query := fmt.Sprintf("UPDATE colonies SET %s = %s - ? WHERE id=?", item, item)
+            if _, err := tx.Exec(query, amount, req.ColonyID); err != nil {
+                tx.Rollback()
+                http.Error(w, "Database Error during transfer", 500)
+                return
+            }
         }
     }
 
@@ -1147,4 +1174,33 @@ func handleListOrders(w http.ResponseWriter, r *http.Request) {
     }
     
     json.NewEncoder(w).Encode(orders)
+}
+
+// Feature 4: Alliance API (Update Peer Relation)
+func handleAlly(w http.ResponseWriter, r *http.Request) {
+    var req struct {
+        TargetUUID string `json:"target_uuid"`
+    }
+    json.NewDecoder(r.Body).Decode(&req)
+    
+    _, err := authenticate(r)
+	if err != nil {
+		http.Error(w, "Unauthorized", 401)
+		return
+	}
+    
+    peerLock.Lock()
+    defer peerLock.Unlock()
+    
+    peer, exists := Peers[req.TargetUUID]
+    if !exists {
+        http.Error(w, "Peer Unknown", 404)
+        return
+    }
+    
+    // Promote to Federated (Ally)
+    // In a real implementation, this should be a handshake, but for MVP it's unilateral.
+    peer.Relation = 1
+    
+    w.Write([]byte("Alliance Formed (Federated Status Granted)"))
 }

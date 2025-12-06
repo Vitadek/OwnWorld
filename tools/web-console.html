@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>OwnWorld Commander v4.5 (Industrial Era)</title>
+    <title>OwnWorld Commander v5 (Scanner Upgrade)</title>
     <style>
         :root { --bg:#050510; --panel:#151520; --accent:#00d2ff; --warn:#ffae00; --danger:#ff3333; --success:#00ff9d; --text:#ddd; }
         body { background:var(--bg); color:var(--text); font-family:monospace; margin:0; padding:20px; }
@@ -269,7 +269,6 @@
         if (!STATE) return;
 
         if (ACTIVE_TAB === 'colonies') {
-            // Use "colonies" (lowercase)
             if (!STATE.colonies || STATE.colonies.length === 0) {
                 v.innerHTML = "<div class='panel'>No Colonies Found.</div>";
                 return;
@@ -306,7 +305,6 @@
                 </div>`;
             }).join('');
         } else if (ACTIVE_TAB === 'fleets') {
-             // Use "fleets" (lowercase) instead of "MyFleets"
              if (!STATE.fleets || STATE.fleets.length === 0) {
                 v.innerHTML = "<div class='panel'>No Fleets. Build them in Shipyard.</div>";
                 return;
@@ -339,6 +337,7 @@
                         <button onclick="addMod('warp_drive')">+ Warp Drive</button>
                         <button onclick="addMod('laser')">+ Laser</button>
                         <button onclick="addMod('colony_kit')">+ Colony Kit</button>
+                        <button onclick="addMod('probe_scanner')">+ Probe Scanner</button>
                         <button onclick="SELECTED_MODULES=[]; renderMain()" style="color:var(--danger); border-color:var(--danger)">CLEAR</button>
                     </div>
                     
@@ -355,6 +354,20 @@
                     </div>` : ''}
                     
                     <button style="width:100%; background:var(--success); color:black;" onclick="constructShip()">CONSTRUCT SHIP</button>
+                </div>
+            `;
+        } else if (ACTIVE_TAB === 'scan') {
+            v.innerHTML = `
+                <div class="panel">
+                    <h3>LONG RANGE SCANNERS</h3>
+                    <div style="margin-bottom:15px; color:#888;">
+                        Coordinates must be within +/- 1,000,000. Scans reveal basic system presence and resource potential.
+                    </div>
+                    <input id="scan-x" type="number" placeholder="X Coord">
+                    <input id="scan-y" type="number" placeholder="Y Coord">
+                    <input id="scan-z" type="number" placeholder="Z Coord">
+                    <button onclick="performScan()" style="width:100%; margin-top:10px; border-color:var(--accent); color:var(--accent)">SCAN SECTOR</button>
+                    <div id="scan-results" style="margin-top:15px; padding:10px; background:#111; font-family:monospace; white-space:pre-wrap;"></div>
                 </div>
             `;
         }
@@ -424,6 +437,34 @@
         const name = prompt("Name the new Province:");
         if(name) {
             apiCall('deploy', {fleet_id: id, name: name}, "Deployment Initiated");
+        }
+    }
+    
+    async function performScan() {
+        const x = parseInt(document.getElementById('scan-x').value);
+        const y = parseInt(document.getElementById('scan-y').value);
+        const z = parseInt(document.getElementById('scan-z').value);
+        
+        if (isNaN(x) || isNaN(y) || isNaN(z)) {
+            document.getElementById('scan-results').innerText = "Invalid Coordinates";
+            return;
+        }
+        
+        document.getElementById('scan-results').innerText = "Scanning deep space...";
+        
+        try {
+            const res = await fetch(`${API_URL}/scan`, {
+                method: 'POST', 
+                body: JSON.stringify({x, y, z}),
+                headers: {
+                    'X-User-UUID': USER_ID,
+                    'X-Session-Token': SESSION_TOKEN
+                }
+            });
+            const data = await res.json();
+            document.getElementById('scan-results').innerText = JSON.stringify(data, null, 2);
+        } catch(e) {
+            document.getElementById('scan-results').innerText = "Sensor Error";
         }
     }
 

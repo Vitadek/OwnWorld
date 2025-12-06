@@ -189,6 +189,9 @@ func main() {
 	mux.HandleFunc("/api/scan", handleScan)
 	mux.HandleFunc("/api/fleet/transfer", handleCargoTransfer)
 	mux.HandleFunc("/api/colony/policy", handleSetPolicy)
+    
+    // Fix 4: Alliance Endpoint
+    mux.HandleFunc("/api/federation/ally", handleAlly)
 
 	mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]interface{}{

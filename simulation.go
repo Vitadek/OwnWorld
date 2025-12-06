@@ -145,6 +145,15 @@ func resolveDeepSpaceArrival(fleet Fleet) {
 		}
 	}
 
+    // Feature C: Detect Probe Scanner
+    // If it has probe_scanner, set status to SCANNING instead of ORBIT
+    // But only if there is no colony there or if explicitly commanded. 
+    // For MVP, if it has a probe, it scans.
+    hasProbe := false
+    for _, m := range fleet.Modules {
+        if m == "probe_scanner" { hasProbe = true; break }
+    }
+    
     // 2. ATOMIC SWAP LOGIC (Market Fulfillment)
     if fleet.TargetOrderID != "" {
         row := db.QueryRow("SELECT item, quantity, price, is_buy, seller_uuid FROM market_orders WHERE order_id=?", fleet.TargetOrderID)
@@ -234,6 +243,12 @@ func resolveDeepSpaceArrival(fleet Fleet) {
                 }
             }
         }
+    }
+    
+    if hasProbe {
+        db.Exec("UPDATE fleets SET status='SCANNING' WHERE id=?", fleet.ID)
+    } else {
+        db.Exec("UPDATE fleets SET status='ORBIT' WHERE id=?", fleet.ID)
     }
 }
 
@@ -415,6 +430,33 @@ func resolveSectorConflict(currentTick int64) {
 	}
 }
 
+// Feature C: Deterministic Probes
+func processScanningFleets() {
+    rows, _ := db.Query("SELECT id, dest_system, payload_json FROM fleets WHERE status='SCANNING'")
+    defer rows.Close()
+    
+    for rows.Next() {
+        var f Fleet
+        var plJson string
+        rows.Scan(&f.ID, &f.DestSystem, &plJson)
+        json.Unmarshal([]byte(plJson), &f.Payload)
+        
+        // Simple logic: Scan target system and neighbors over time
+        // Just increment progress or add discovered data
+        if f.Payload.Resources == nil { f.Payload.Resources = make(map[string]int) }
+        f.Payload.Resources["scan_progress"] += 10
+        
+        // Simulate data gathering
+        if f.Payload.Resources["scan_progress"] >= 100 {
+             // Scanning complete, return to orbit?
+             // Or keep scanning for deep deep space...
+        }
+        
+        newPlJson, _ := json.Marshal(f.Payload)
+        db.Exec("UPDATE fleets SET payload_json=? WHERE id=?", string(newPlJson), f.ID)
+    }
+}
+
 func tickWorld() {
 	stateLock.Lock()
 	defer stateLock.Unlock()
@@ -442,35 +484,49 @@ func tickWorld() {
         if tOrder.Valid { f.TargetOrderID = tOrder.String }
 
 		resolveDeepSpaceArrival(f)
-		db.Exec("UPDATE fleets SET status='ORBIT' WHERE id=?", f.ID)
 	}
+    
+    processScanningFleets()
 
 	resolveSectorConflict(current)
 
     // Process Colonies (Happiness & Industry)
-	rows, err := db.Query(`SELECT id, buildings_json, policies_json, pop_laborers, pop_specialists, pop_elites, 
-	                       food, water, carbon, gold, fuel, steel, wine, vegetation, stability_current, stability_target, iron,
-                           uranium, uranium_ore, platinum, platinum_ore, diamond, diamond_ore, plutonium
-	                       FROM colonies`)
+    // Updated query to fetch tax_rate via JOIN
+	rows, err := db.Query(`SELECT c.id, c.buildings_json, c.policies_json, c.pop_laborers, c.pop_specialists, c.pop_elites, 
+	                       c.food, c.water, c.carbon, c.gold, c.fuel, c.steel, c.wine, c.vegetation, c.stability_current, c.stability_target, c.iron,
+                           c.uranium, c.uranium_ore, c.platinum, c.platinum_ore, c.diamond, c.diamond_ore, c.plutonium, c.owner_uuid,
+                           c.oxygen, c.martial_law,
+                           COALESCE(s.tax_rate, 0.0) as tax_rate
+	                       FROM colonies c
+                           LEFT JOIN solar_systems s ON c.system_id = s.id`)
 	if err != nil { return }
 	defer rows.Close()
 
 	type ColUpdate struct {
 		ID                                                      int
 		Food, Water, Iron, Carbon, Gold, Fuel, Steel, Wine, Veg int
-        Uranium, UraniumOre, Platinum, PlatinumOre, Diamond, DiamondOre, Plutonium int
+        Uranium, UraniumOre, Platinum, PlatinumOre, Diamond, DiamondOre, Plutonium, Oxygen int
 		PopLab, PopSpec, PopElite                               int
 		Stability, Target                                       float64
 	}
+    type UserCreditUpdate struct {
+        UserUUID string
+        Amount   int
+    }
+    
 	var updates []ColUpdate
+    var creditUpdates []UserCreditUpdate
 
 	for rows.Next() {
 		var c Colony
 		var bJson, pJson string
+        var taxRate float64
+        
 		rows.Scan(&c.ID, &bJson, &pJson, &c.PopLaborers, &c.PopSpecialists, &c.PopElites,
 			&c.Food, &c.Water, &c.Carbon, &c.Gold, &c.Fuel, &c.Steel, &c.Wine, &c.Vegetation,
 			&c.StabilityCurrent, &c.StabilityTarget, &c.Iron,
-            &c.Uranium, &c.UraniumOre, &c.Platinum, &c.PlatinumOre, &c.Diamond, &c.DiamondOre, &c.Plutonium)
+            &c.Uranium, &c.UraniumOre, &c.Platinum, &c.PlatinumOre, &c.Diamond, &c.DiamondOre, &c.Plutonium, &c.OwnerUUID,
+            &c.Oxygen, &c.MartialLaw, &taxRate)
 		json.Unmarshal([]byte(bJson), &c.Buildings)
 		
 		c.Policies = make(map[string]bool)
@@ -481,6 +537,12 @@ func tickWorld() {
         effMult := 1.0
         if c.StabilityCurrent >= 90.0 { effMult = 1.10 }
         if c.StabilityCurrent <= 20.0 { effMult = 0.0 } // Strikes!
+        
+        // Feature B: Social Policies
+        if c.Policies["forced_labor"] {
+             effMult += 0.5 // +50% Production
+             c.StabilityTarget -= 20.0 // -20 Happiness
+        }
 
 		foodEff := GetEfficiency(c.ID, "food") * effMult
         
@@ -492,6 +554,10 @@ func tickWorld() {
         c.Carbon = safeAdd(c.Carbon, int(float64(c.Buildings["carbon_extractor"]*10)*GetEfficiency(c.ID, "carbon")*effMult))
         c.Iron = safeAdd(c.Iron, int(float64(c.Buildings["iron_mine"]*10)*GetEfficiency(c.ID, "iron")*effMult))
 
+        // Fix 2: Oxygen Production
+        c.Oxygen = safeAdd(c.Oxygen, c.Vegetation * 10)
+        if c.Oxygen > 10000 { c.Oxygen = 10000 }
+
         // --- 2. Industry (Specialists Work) ---
         // If specialists are unhappy (Stability < 40), industry slows down
         indMult := 1.0
@@ -500,16 +566,20 @@ func tickWorld() {
 
         // --- 3. Stratified Consumption & Happiness ---
         
-        // Laborers (Survival: Food, Water)
+        // Laborers (Survival: Food, Water, Oxygen)
         labNeedFood := c.PopLaborers / 10 // 1 unit per 10 ppl
         labNeedWater := c.PopLaborers / 10
+        labNeedOxygen := c.PopLaborers / 100
+        
         satLabFood := 1.0
         satLabWater := 1.0
+        satLabAir := 1.0
         
         if c.Food >= labNeedFood { c.Food -= labNeedFood } else { satLabFood = calculateSatisfaction(c.Food, labNeedFood); c.Food = 0 }
         if c.Water >= labNeedWater { c.Water -= labNeedWater } else { satLabWater = calculateSatisfaction(c.Water, labNeedWater); c.Water = 0 }
+        if c.Oxygen >= labNeedOxygen { c.Oxygen -= labNeedOxygen } else { satLabAir = 0.0; c.Oxygen = 0; c.PopLaborers -= 10; c.StabilityTarget -= 5.0 } // Suffocation
         
-        satLabor := (satLabFood + satLabWater) / 2.0
+        satLabor := (satLabFood + satLabWater + satLabAir) / 3.0
 
         // Specialists (Comfort: Steel, Fuel)
         specNeedSteel := c.PopSpecialists / 20
@@ -537,8 +607,6 @@ func tickWorld() {
 
         // --- 4. Weighted Stability ---
         // Formula: (Labor * 0.5) + (Specialist * 0.3) + (Elite * 0.2)
-        // Result is 0.0 to 1.0, scaled to 100.
-        
         weightedSat := (satLabor * 0.5) + (satSpec * 0.3) + (satElite * 0.2)
         c.StabilityTarget = weightedSat * 100.0
         
@@ -547,6 +615,35 @@ func tickWorld() {
             deathToll := int(float64(c.PopLaborers) * 0.05) // 5% die
             c.PopLaborers -= deathToll
             c.StabilityTarget -= 20.0 // Riots
+        }
+        
+        // Fix 3: Martial Law
+        if c.MartialLaw {
+            if c.StabilityCurrent < 50.0 { c.StabilityCurrent = 50.0 } // Iron Fist
+            satElite = 0.0 // Elites hate martial law
+            // Also disables growth below...
+        }
+        
+        // Feature A: Taxation
+        if taxRate > 0 {
+             taxRevenue := int(float64(c.PopLaborers) * taxRate)
+             creditUpdates = append(creditUpdates, UserCreditUpdate{c.OwnerUUID, taxRevenue})
+             c.StabilityTarget -= (taxRate * 100.0) // Significant penalty for high taxes
+        }
+        
+        // Fix A: Natural Births
+        housingCap := 100 + (c.Buildings["urban_housing"] * 50)
+        // Growth Condition: High Stability (>80%) and Full Food Saturation, AND NO MARTIAL LAW
+        if !c.MartialLaw && c.StabilityCurrent > 80.0 && satLabor >= 1.0 && c.PopLaborers < housingCap {
+            growth := int(float64(c.PopLaborers) * 0.01) // 1% growth
+            if growth < 1 { growth = 1 }
+            c.PopLaborers += growth
+        }
+        
+        // Feature C: Class Mobility
+        if c.Buildings["pilot_academy"] > 0 && c.PopLaborers > 10 {
+             c.PopLaborers -= 5
+             c.PopSpecialists += 5
         }
 
 		diff := c.StabilityTarget - c.StabilityCurrent
@@ -562,7 +659,7 @@ func tickWorld() {
             Uranium: c.Uranium, UraniumOre: c.UraniumOre, 
             Platinum: c.Platinum, PlatinumOre: c.PlatinumOre, 
             Diamond: c.Diamond, DiamondOre: c.DiamondOre,
-            Plutonium: c.Plutonium,
+            Plutonium: c.Plutonium, Oxygen: c.Oxygen,
 			PopLab: c.PopLaborers, PopSpec: c.PopSpecialists, PopElite: c.PopElites,
 			Stability: c.StabilityCurrent, Target: c.StabilityTarget,
 		})
@@ -573,18 +670,26 @@ func tickWorld() {
 		stmt, _ := tx.Prepare(`UPDATE colonies SET 
 			food=?, water=?, iron=?, carbon=?, gold=?, fuel=?, 
 			steel=?, wine=?, vegetation=?,
-            uranium=?, uranium_ore=?, platinum=?, platinum_ore=?, diamond=?, diamond_ore=?, plutonium=?,
+            uranium=?, uranium_ore=?, platinum=?, platinum_ore=?, diamond=?, diamond_ore=?, plutonium=?, oxygen=?,
 			pop_laborers=?, pop_specialists=?, pop_elites=?, 
 			stability_current=?, stability_target=? 
 			WHERE id=?`)
 		for _, u := range updates {
 			stmt.Exec(u.Food, u.Water, u.Iron, u.Carbon, u.Gold, u.Fuel,
 				u.Steel, u.Wine, u.Veg,
-                u.Uranium, u.UraniumOre, u.Platinum, u.PlatinumOre, u.Diamond, u.DiamondOre, u.Plutonium,
+                u.Uranium, u.UraniumOre, u.Platinum, u.PlatinumOre, u.Diamond, u.DiamondOre, u.Plutonium, u.Oxygen,
 				u.PopLab, u.PopSpec, u.PopElite,
 				u.Stability, u.Target, u.ID)
 		}
 		stmt.Close()
+        
+        // Process Tax Revenues
+        credStmt, _ := tx.Prepare("UPDATE users SET credits = credits + ? WHERE global_uuid=?")
+        for _, cu := range creditUpdates {
+            credStmt.Exec(cu.Amount, cu.UserUUID)
+        }
+        credStmt.Close()
+        
 		tx.Commit()
 	}
 
