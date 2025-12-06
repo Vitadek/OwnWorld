@@ -441,16 +441,8 @@ func processScanningFleets() {
         rows.Scan(&f.ID, &f.DestSystem, &plJson)
         json.Unmarshal([]byte(plJson), &f.Payload)
         
-        // Simple logic: Scan target system and neighbors over time
-        // Just increment progress or add discovered data
         if f.Payload.Resources == nil { f.Payload.Resources = make(map[string]int) }
         f.Payload.Resources["scan_progress"] += 10
-        
-        // Simulate data gathering
-        if f.Payload.Resources["scan_progress"] >= 100 {
-             // Scanning complete, return to orbit?
-             // Or keep scanning for deep deep space...
-        }
         
         newPlJson, _ := json.Marshal(f.Payload)
         db.Exec("UPDATE fleets SET payload_json=? WHERE id=?", string(newPlJson), f.ID)
@@ -465,12 +457,10 @@ func tickWorld() {
 	current := atomic.AddInt64(&CurrentTick, 1)
 	db.Exec("INSERT INTO transaction_log (tick, action_type) VALUES (?, 'TICK')", current)
 
-    // Clean Expired Market Orders
     if current % 100 == 0 {
         db.Exec("DELETE FROM market_orders WHERE expires_tick < ?", current)
     }
 
-    // Process Fleets
 	fRows, _ := db.Query("SELECT id, dest_system, status, hull_class, modules_json, owner_uuid, payload_json, target_order_id FROM fleets WHERE arrival_tick <= ? AND status='TRANSIT'", current)
 	defer fRows.Close()
 
@@ -490,8 +480,6 @@ func tickWorld() {
 
 	resolveSectorConflict(current)
 
-    // Process Colonies (Happiness & Industry)
-    // Updated query to fetch tax_rate via JOIN
 	rows, err := db.Query(`SELECT c.id, c.buildings_json, c.policies_json, c.pop_laborers, c.pop_specialists, c.pop_elites, 
 	                       c.food, c.water, c.carbon, c.gold, c.fuel, c.steel, c.wine, c.vegetation, c.stability_current, c.stability_target, c.iron,
                            c.uranium, c.uranium_ore, c.platinum, c.platinum_ore, c.diamond, c.diamond_ore, c.plutonium, c.owner_uuid,
@@ -533,15 +521,13 @@ func tickWorld() {
 		if pJson != "" { json.Unmarshal([]byte(pJson), &c.Policies) }
 
         // --- 1. Base Extraction (Laborers Work) ---
-        // Efficiency multiplier based on current stability (High stability = Bonus)
         effMult := 1.0
         if c.StabilityCurrent >= 90.0 { effMult = 1.10 }
-        if c.StabilityCurrent <= 20.0 { effMult = 0.0 } // Strikes!
+        if c.StabilityCurrent <= 20.0 { effMult = 0.0 } 
         
-        // Feature B: Social Policies
         if c.Policies["forced_labor"] {
-             effMult += 0.5 // +50% Production
-             c.StabilityTarget -= 20.0 // -20 Happiness
+             effMult += 0.5 
+             c.StabilityTarget -= 20.0
         }
 
 		foodEff := GetEfficiency(c.ID, "food") * effMult
@@ -559,29 +545,65 @@ func tickWorld() {
         if c.Oxygen > 10000 { c.Oxygen = 10000 }
 
         // --- 2. Industry (Specialists Work) ---
-        // If specialists are unhappy (Stability < 40), industry slows down
         indMult := 1.0
         if c.StabilityCurrent < 40 { indMult = 0.5 }
 		processIndustry(&c, indMult)
 
         // --- 3. Stratified Consumption & Happiness ---
         
-        // Laborers (Survival: Food, Water, Oxygen)
-        labNeedFood := c.PopLaborers / 10 // 1 unit per 10 ppl
+        // Consumption Variables
+        labNeedFood := c.PopLaborers / 10 
         labNeedWater := c.PopLaborers / 10
         labNeedOxygen := c.PopLaborers / 100
         
+        // --- NEW POLICY LOGIC START ---
+        growthBlocked := false
+
+        // Strict Rationing
+        if c.Policies["strict_rationing"] {
+            labNeedFood /= 2
+            labNeedWater /= 2
+            c.StabilityTarget -= 15.0
+            growthBlocked = true
+        }
+
+        // Propaganda
+        if c.Policies["propaganda"] {
+            if c.Fuel >= 5 {
+                c.Fuel -= 5
+                c.StabilityTarget += 10.0 
+            } else {
+                c.StabilityTarget -= 5.0
+            }
+        }
+
+        // Border Lockdown
+        if c.Policies["border_lockdown"] {
+            if c.Steel >= 2 {
+                c.Steel -= 2
+                c.StabilityTarget += 2.0 // Security Feeling
+            }
+        }
+
+        // Subsidized Housing (Growth Bonus)
+        housingCap := 100 + (c.Buildings["urban_housing"] * 50)
+        if c.Policies["subsidized_housing"] {
+            creditUpdates = append(creditUpdates, UserCreditUpdate{c.OwnerUUID, -50}) 
+            housingCap = int(float64(housingCap) * 1.5)
+        }
+        // --- NEW POLICY LOGIC END ---
+
         satLabFood := 1.0
         satLabWater := 1.0
         satLabAir := 1.0
         
         if c.Food >= labNeedFood { c.Food -= labNeedFood } else { satLabFood = calculateSatisfaction(c.Food, labNeedFood); c.Food = 0 }
         if c.Water >= labNeedWater { c.Water -= labNeedWater } else { satLabWater = calculateSatisfaction(c.Water, labNeedWater); c.Water = 0 }
-        if c.Oxygen >= labNeedOxygen { c.Oxygen -= labNeedOxygen } else { satLabAir = 0.0; c.Oxygen = 0; c.PopLaborers -= 10; c.StabilityTarget -= 5.0 } // Suffocation
+        if c.Oxygen >= labNeedOxygen { c.Oxygen -= labNeedOxygen } else { satLabAir = 0.0; c.Oxygen = 0; c.PopLaborers -= 10; c.StabilityTarget -= 5.0 } 
         
         satLabor := (satLabFood + satLabWater + satLabAir) / 3.0
 
-        // Specialists (Comfort: Steel, Fuel)
+        // Specialists
         specNeedSteel := c.PopSpecialists / 20
         specNeedFuel := c.PopSpecialists / 20
         satSpecSteel := 1.0
@@ -593,7 +615,7 @@ func tickWorld() {
         satSpec := (satSpecSteel + satSpecFuel) / 2.0
         if c.PopSpecialists == 0 { satSpec = 1.0 }
 
-        // Elites (Luxury: Wine, Platinum)
+        // Elites
         eliteNeedWine := c.PopElites / 5
         eliteNeedPlat := c.PopElites / 10
         satEliteWine := 1.0
@@ -606,15 +628,13 @@ func tickWorld() {
         if c.PopElites == 0 { satElite = 1.0 }
 
         // --- 4. Weighted Stability ---
-        // Formula: (Labor * 0.5) + (Specialist * 0.3) + (Elite * 0.2)
         weightedSat := (satLabor * 0.5) + (satSpec * 0.3) + (satElite * 0.2)
         c.StabilityTarget = weightedSat * 100.0
         
-        // Starvation Penalty (Laborers dying)
         if satLabor < 0.5 {
-            deathToll := int(float64(c.PopLaborers) * 0.05) // 5% die
+            deathToll := int(float64(c.PopLaborers) * 0.05) 
             c.PopLaborers -= deathToll
-            c.StabilityTarget -= 20.0 // Riots
+            c.StabilityTarget -= 20.0 
         }
         
         // Fix 3: Martial Law
@@ -624,30 +644,26 @@ func tickWorld() {
             // Also disables growth below...
         }
         
-        // Feature A: Taxation
         if taxRate > 0 {
              taxRevenue := int(float64(c.PopLaborers) * taxRate)
              creditUpdates = append(creditUpdates, UserCreditUpdate{c.OwnerUUID, taxRevenue})
-             c.StabilityTarget -= (taxRate * 100.0) // Significant penalty for high taxes
+             c.StabilityTarget -= (taxRate * 100.0) 
         }
         
-        // Fix A: Natural Births
-        housingCap := 100 + (c.Buildings["urban_housing"] * 50)
-        // Growth Condition: High Stability (>80%) and Full Food Saturation, AND NO MARTIAL LAW
-        if !c.MartialLaw && c.StabilityCurrent > 80.0 && satLabor >= 1.0 && c.PopLaborers < housingCap {
-            growth := int(float64(c.PopLaborers) * 0.01) // 1% growth
+        // Growth (Uses housingCap calculated in Policy block)
+        if !c.MartialLaw && !growthBlocked && c.StabilityCurrent > 80.0 && satLabor >= 1.0 && c.PopLaborers < housingCap {
+            growth := int(float64(c.PopLaborers) * 0.01) 
             if growth < 1 { growth = 1 }
             c.PopLaborers += growth
         }
         
-        // Feature C: Class Mobility
         if c.Buildings["pilot_academy"] > 0 && c.PopLaborers > 10 {
              c.PopLaborers -= 5
              c.PopSpecialists += 5
         }
 
 		diff := c.StabilityTarget - c.StabilityCurrent
-		c.StabilityCurrent += diff * 0.1 // Move 10% towards target per tick
+		c.StabilityCurrent += diff * 0.1 
         if c.StabilityCurrent < 0 { c.StabilityCurrent = 0 }
         if c.StabilityCurrent > 100 { c.StabilityCurrent = 100 }
 
@@ -683,7 +699,6 @@ func tickWorld() {
 		}
 		stmt.Close()
         
-        // Process Tax Revenues
         credStmt, _ := tx.Prepare("UPDATE users SET credits = credits + ? WHERE global_uuid=?")
         for _, cu := range creditUpdates {
             credStmt.Exec(cu.Amount, cu.UserUUID)

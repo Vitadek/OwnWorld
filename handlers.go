@@ -380,8 +380,9 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	if errSys != nil {}
 
 	startBuilds := `{"farm": 5, "iron_mine": 5, "urban_housing": 10}`
+	// FIX: Start with 1000 pop
 	_, errCol := db.Exec(`INSERT INTO colonies (system_id, owner_uuid, name, pop_laborers, food, iron, buildings_json) 
-	         VALUES (?, ?, ?, 100, 2000, 1000, ?)`, sysID, userUUID, req.Username+" Prime", startBuilds)
+	         VALUES (?, ?, ?, 1000, 2000, 1000, ?)`, sysID, userUUID, req.Username+" Prime", startBuilds)
 	
 	if errCol != nil {}
 
@@ -1203,4 +1204,20 @@ func handleAlly(w http.ResponseWriter, r *http.Request) {
     peer.Relation = 1
     
     w.Write([]byte("Alliance Formed (Federated Status Granted)"))
+}
+
+// Helper: List Peers for UI
+func handleListPeers(w http.ResponseWriter, r *http.Request) {
+    // No auth strict check needed for simple list, but good practice
+    
+    peerLock.RLock()
+    defer peerLock.RUnlock()
+    
+    // Convert map to slice
+    list := make([]Peer, 0, len(Peers))
+    for _, p := range Peers {
+        list = append(list, *p)
+    }
+    
+    json.NewEncoder(w).Encode(list)
 }
