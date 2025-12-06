@@ -1,0 +1,1233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>OwnWorld Uplink</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        space: {
+                            900: '#050510',
+                            800: '#151520',
+                            700: '#252535',
+                        },
+                        neon: {
+                            blue: '#00d2ff',
+                            purple: '#bd00ff',
+                            green: '#00ff9d',
+                            red: '#ff3333',
+                            amber: '#ffae00'
+                        }
+                    },
+                    animation: {
+                        'pulse-slow': 'pulse 4s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+                        'spin-slow': 'spin 12s linear infinite',
+                    },
+                    backgroundImage: {
+                        'starfield': "url('https://www.transparenttextures.com/patterns/stardust.png')",
+                    }
+                }
+            }
+        }
+    </script>
+
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    
+    <!-- Babel -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    
+    <style>
+        body { background-color: #050510; color: #e2e8f0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; -webkit-tap-highlight-color: transparent; }
+        .glass-panel { background: rgba(21, 21, 32, 0.85); backdrop-filter: blur(16px); border: 1px solid rgba(255, 255, 255, 0.08); }
+        .neon-border { box-shadow: 0 0 5px rgba(0, 210, 255, 0.1); }
+        .pixel-art { image-rendering: pixelated; }
+        
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: #050510; }
+        ::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #00d2ff; }
+
+        /* Scanlines Effect */
+        .scanlines {
+            background: linear-gradient(
+                to bottom,
+                rgba(255,255,255,0),
+                rgba(255,255,255,0) 50%,
+                rgba(0,0,0,0.2) 50%,
+                rgba(0,0,0,0.2)
+            );
+            background-size: 100% 4px;
+            position: fixed;
+            pointer-events: none;
+            top: 0; right: 0; bottom: 0; left: 0;
+            z-index: 9999;
+            opacity: 0.15;
+        }
+        
+        .no-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+        .no-scrollbar {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+    </style>
+</head>
+<body className="bg-space-900 bg-starfield text-gray-200">
+    <div className="scanlines"></div>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useCallback, useMemo } = React;
+
+        // --- Config ---
+        // Auto-detect IP if accessed via LAN, otherwise default to localhost
+        const getInitialApiUrl = () => {
+            const host = window.location.hostname;
+            const protocol = window.location.protocol;
+            if (host && host !== 'localhost' && !host.startsWith('127.')) {
+                // If served via Nginx on port 80/443, the API is likely proxied at /api
+                // But the user might be using a direct port. 
+                // Defaulting to :8080 for dev, but standard Nginx setup (below) uses relative paths.
+                return `${protocol}//${host}:8080`;
+            }
+            return "http://localhost:8080";
+        };
+
+        const DEFAULT_API = getInitialApiUrl();
+
+        const IMAGES = [
+            "https://images.unsplash.com/photo-1462331940025-496dfbfc7564?q=80&w=2000&auto=format&fit=crop", 
+            "https://images.unsplash.com/photo-1451187580459-43490279c0fa?q=80&w=2000&auto=format&fit=crop", 
+            "https://images.unsplash.com/photo-1534293507094-1a6cb9385c75?q=80&w=2000&auto=format&fit=crop", 
+            "https://images.unsplash.com/photo-1444703686981-a3abbc4d4fe3?q=80&w=2000&auto=format&fit=crop", 
+            "https://images.unsplash.com/photo-1614730341194-75c60740a2d3?q=80&w=2000&auto=format&fit=crop"
+        ];
+        
+        // --- Icons (Lucide wrapper) ---
+        const Icon = ({ name, size = 20, className = "" }) => {
+            useEffect(() => {
+                if (window.lucide) window.lucide.createIcons();
+            }, [name]);
+            return <i data-lucide={name} className={className} style={{ width: size, height: size }}></i>;
+        };
+
+        // --- Helpers ---
+        const formatNumber = (num) => {
+            if (!num) return "0";
+            if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
+            if (num >= 1000) return (num / 1000).toFixed(1) + 'k';
+            return num;
+        };
+
+        const apiRequest = async (endpoint, method = 'GET', body = null, session = null) => {
+            const headers = { 'Content-Type': 'application/json' };
+            if (session) {
+                headers['X-User-UUID'] = session.uuid;
+                headers['X-Session-Token'] = session.token;
+            }
+            
+            try {
+                const opts = { method, headers };
+                if (body) opts.body = JSON.stringify(body);
+                
+                // Support relative API paths if served from same origin via Nginx
+                const baseUrl = session?.url || DEFAULT_API;
+                const finalUrl = baseUrl.endsWith('/') ? `${baseUrl}api/${endpoint}` : `${baseUrl}/api/${endpoint}`;
+
+                const res = await fetch(finalUrl, opts);
+                
+                if (!res.ok) {
+                    const txt = await res.text();
+                    throw new Error(txt || res.statusText);
+                }
+                
+                const contentType = res.headers.get("content-type");
+                if (contentType && contentType.indexOf("application/json") !== -1) {
+                    return await res.json();
+                } else {
+                    return { message: await res.text() };
+                }
+            } catch (err) {
+                throw err;
+            }
+        };
+
+        // --- Smart Calculations ---
+        const calculateStabilityTrend = (c) => {
+            let trend = 0;
+            const laborSat = Math.min(1, c.food / (c.pop_laborers/10 || 1));
+            if (laborSat < 1) trend -= 5;
+            if (c.martia_law) trend = 0; 
+            return trend; 
+        };
+
+        const canAfford = (cost, resources) => {
+            for (const [key, val] of Object.entries(cost)) {
+                if ((resources[key] || 0) < val) return false;
+            }
+            return true;
+        };
+
+        // --- Sprites ---
+        const SPRITES = {
+            colony: "https://img.icons8.com/external-flaticons-lineal-color-flat-icons/64/external-colony-space-flaticons-lineal-color-flat-icons.png",
+            fighter: "https://img.icons8.com/external-flaticons-lineal-color-flat-icons/64/external-spaceship-space-flaticons-lineal-color-flat-icons-2.png",
+            colonizer: "https://img.icons8.com/external-flaticons-lineal-color-flat-icons/64/external-spaceship-space-flaticons-lineal-color-flat-icons-3.png",
+            frigate: "https://img.icons8.com/external-flaticons-lineal-color-flat-icons/64/external-ufo-space-flaticons-lineal-color-flat-icons-2.png",
+            bomber: "https://img.icons8.com/external-flaticons-lineal-color-flat-icons/64/external-spaceship-space-flaticons-lineal-color-flat-icons.png",
+            resources: {
+                credits: "https://img.icons8.com/ios-filled/50/26e07f/coins.png",
+                pop: "https://img.icons8.com/ios-filled/50/ffffff/user-group-man-man.png",
+                food: "https://img.icons8.com/ios-filled/50/4ade80/wheat.png",
+                iron: "https://img.icons8.com/ios-filled/50/94a3b8/iron-ore.png",
+                fuel: "https://img.icons8.com/ios-filled/50/facc15/gas-station.png",
+                steel: "https://img.icons8.com/ios-filled/50/64748b/steel-i-beam.png"
+            }
+        };
+
+        // --- Components ---
+
+        const Toast = ({ message, type, onClose }) => {
+            useEffect(() => {
+                const timer = setTimeout(onClose, 3000);
+                return () => clearTimeout(timer);
+            }, []);
+            
+            const colors = {
+                success: 'border-neon-green text-neon-green bg-green-900/80',
+                error: 'border-neon-red text-neon-red bg-red-900/80',
+                info: 'border-neon-blue text-neon-blue bg-blue-900/80'
+            };
+
+            return (
+                <div className={`fixed bottom-24 right-4 z-50 glass-panel border-l-4 px-6 py-4 rounded shadow-2xl flex items-center gap-3 ${colors[type] || colors.info} animate-bounce`}>
+                    <span className="font-bold font-mono">{message}</span>
+                </div>
+            );
+        };
+
+        const LoginScreen = ({ onLogin }) => {
+            const [url, setUrl] = useState(localStorage.getItem('ownworld_url') || DEFAULT_API);
+            const [username, setUsername] = useState('');
+            const [password, setPassword] = useState('');
+            const [loading, setLoading] = useState(false);
+            const [error, setError] = useState('');
+            const [bgImage, setBgImage] = useState(IMAGES[0]);
+
+            useEffect(() => {
+                setBgImage(IMAGES[Math.floor(Math.random() * IMAGES.length)]);
+            }, []);
+
+            const handleLogin = async (e) => {
+                e.preventDefault();
+                setLoading(true);
+                setError('');
+                
+                try {
+                    const cleanUrl = url.endsWith('/') ? url.slice(0, -1) : url;
+                    const res = await fetch(`${cleanUrl}/api/register`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ username, password })
+                    });
+                    
+                    if (!res.ok) throw new Error(await res.text());
+                    
+                    const data = await res.json();
+                    localStorage.setItem('ownworld_url', cleanUrl);
+                    
+                    onLogin({
+                        uuid: data.user_uuid,
+                        token: data.session_token,
+                        username: username,
+                        url: cleanUrl
+                    });
+                } catch (err) {
+                    setError(err.message);
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            return (
+                <div className="min-h-screen flex items-center justify-center relative overflow-hidden bg-black">
+                    <div className="absolute inset-0 bg-cover bg-center opacity-60 transition-all duration-1000" style={{ backgroundImage: `url(${bgImage})` }}></div>
+                    <div className="absolute inset-0 bg-gradient-to-t from-black via-black/50 to-transparent"></div>
+                    <div className="absolute inset-0 bg-starfield opacity-40 animate-pulse-slow"></div>
+                    
+                    <div className="relative z-10 w-full max-w-md p-8 glass-panel rounded-xl neon-border m-4 shadow-[0_0_50px_rgba(0,210,255,0.1)] backdrop-blur-xl">
+                        <div className="text-center mb-8">
+                            <div className="flex justify-center mb-4">
+                                <div className="relative w-16 h-16">
+                                    <div className="absolute inset-0 border-4 border-neon-blue rounded-full opacity-20 animate-ping"></div>
+                                    <div className="absolute inset-0 border-4 border-neon-purple rounded-full opacity-40 animate-spin-slow"></div>
+                                    <div className="absolute inset-0 flex items-center justify-center">
+                                        <Icon name="globe" size={32} className="text-neon-blue" />
+                                    </div>
+                                </div>
+                            </div>
+                            <h1 className="text-5xl font-black tracking-tighter text-transparent bg-clip-text bg-gradient-to-r from-neon-blue to-neon-purple mb-2" style={{textShadow: '0 0 20px rgba(0,210,255,0.5)'}}>OWNWORLD</h1>
+                            <p className="text-neon-blue font-mono text-xs tracking-[0.3em]">FEDERATION UPLINK v7.0</p>
+                        </div>
+                        
+                        <form onSubmit={handleLogin} className="space-y-4">
+                            <div>
+                                <label className="text-[10px] text-neon-blue uppercase font-bold tracking-wider">Server Frequency</label>
+                                <input value={url} onChange={e => setUrl(e.target.value)} className="w-full bg-black/50 border border-gray-700 rounded p-3 text-white font-mono text-sm focus:border-neon-blue focus:outline-none focus:ring-1 focus:ring-neon-blue transition-all" />
+                            </div>
+                            <div>
+                                <label className="text-[10px] text-neon-blue uppercase font-bold tracking-wider">Commander ID</label>
+                                <input value={username} onChange={e => setUsername(e.target.value)} className="w-full bg-black/50 border border-gray-700 rounded p-3 text-white font-mono text-sm focus:border-neon-blue focus:outline-none focus:ring-1 focus:ring-neon-blue transition-all" />
+                            </div>
+                            <div>
+                                <label className="text-[10px] text-neon-blue uppercase font-bold tracking-wider">Secure Key</label>
+                                <input type="password" value={password} onChange={e => setPassword(e.target.value)} className="w-full bg-black/50 border border-gray-700 rounded p-3 text-white font-mono text-sm focus:border-neon-blue focus:outline-none focus:ring-1 focus:ring-neon-blue transition-all" />
+                            </div>
+                            
+                            {error && <div className="text-neon-red text-xs font-mono text-center bg-red-900/20 p-2 rounded border border-neon-red/50">{error}</div>}
+                            
+                            <button disabled={loading} className="w-full bg-neon-blue/10 hover:bg-neon-blue/20 text-neon-blue border border-neon-blue font-bold py-3 rounded transition-all disabled:opacity-50 hover:shadow-[0_0_15px_rgba(0,210,255,0.3)]">
+                                {loading ? 'ESTABLISHING NEURAL LINK...' : 'INITIALIZE UPLINK'}
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            );
+        };
+
+        const StatBar = ({ colony, credits }) => {
+            if (!colony) return (
+                 <div className="fixed top-16 left-0 right-0 h-14 bg-space-800/90 backdrop-blur border-b border-gray-800 z-30 flex items-center justify-center px-4 text-gray-500 text-xs">
+                    Awaiting telemetry...
+                </div>
+            );
+            
+            const resources = [
+                { name: "CREDITS", val: credits, icon: SPRITES.resources.credits, color: "text-neon-green" },
+                { name: "POP", val: colony.pop_laborers, icon: SPRITES.resources.pop, color: "text-white" },
+                { name: "FOOD", val: colony.food, icon: SPRITES.resources.food, color: "text-green-400" },
+                { name: "IRON", val: colony.iron, icon: SPRITES.resources.iron, color: "text-slate-400" },
+                { name: "FUEL", val: colony.fuel, icon: SPRITES.resources.fuel, color: "text-yellow-400" },
+                { name: "STEEL", val: colony.steel, icon: SPRITES.resources.steel, color: "text-slate-500" },
+            ];
+
+            const trend = calculateStabilityTrend(colony);
+            const trendIcon = trend > 0 ? 'arrow-up' : (trend < 0 ? 'arrow-down' : 'minus');
+            const trendColor = trend > 0 ? 'text-neon-green' : (trend < 0 ? 'text-neon-red' : 'text-gray-500');
+
+            return (
+                <div className="fixed top-16 left-0 right-0 h-14 bg-space-800/90 backdrop-blur border-b border-gray-800 z-30 flex items-center overflow-x-auto px-4 gap-6 no-scrollbar shadow-lg">
+                    {resources.map((r, i) => (
+                        <div key={i} className="flex items-center gap-2 flex-shrink-0">
+                            <img src={r.icon} className="w-4 h-4 opacity-80 pixel-art" onError={(e) => e.target.style.display='none'} />
+                            <div className="flex flex-col leading-none">
+                                <span className="text-[9px] text-gray-500 font-bold tracking-wider">{r.name}</span>
+                                <span className={`font-mono font-bold text-sm ${r.color}`}>{formatNumber(r.val)}</span>
+                            </div>
+                        </div>
+                    ))}
+                    <div className="w-px h-8 bg-gray-700 mx-2"></div>
+                    <div className="flex flex-col leading-none flex-shrink-0">
+                        <span className="text-[9px] text-gray-500 font-bold tracking-wider">STABILITY</span>
+                        <div className="flex items-center gap-1">
+                             <span className={`font-mono font-bold text-sm ${colony.stability_current < 50 ? 'text-neon-red' : 'text-neon-green'}`}>
+                                {Math.floor(colony.stability_current)}%
+                            </span>
+                            <Icon name={trendIcon} size={12} className={trendColor} />
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const BuildMenu = ({ colony, session, onSuccess }) => {
+            const [amount, setAmount] = useState(1);
+
+            const structures = [
+                { id: 'farm', name: 'Hydro Farm', cost: { iron: 10 }, desc: "Produces Food" },
+                { id: 'well', name: 'Water Pump', cost: { iron: 10 }, desc: "Produces Water" },
+                { id: 'urban_housing', name: 'Hab Block', cost: { iron: 50 }, desc: "Housing +Pop Cap" },
+                { id: 'iron_mine', name: 'Iron Mine', cost: { food: 500 }, desc: "Produces Iron" },
+                { id: 'carbon_extractor', name: 'Carbon Siphon', cost: { iron: 100, food: 200 }, desc: "Produces Carbon" },
+                { id: 'steel_mill', name: 'Steel Mill', cost: { iron: 500, carbon: 500 }, desc: "Converts Iron+Carbon -> Steel" },
+                { id: 'fuel_synthesizer', name: 'Fuel Synth', cost: { iron: 1000, steel: 200 }, desc: "Refines Fuel" },
+                { id: 'uranium_mine', name: 'Uranium Drill', cost: { iron: 2000, steel: 500 }, desc: "Extracts Uranium" }
+            ];
+
+            const getAffordableMax = (cost) => {
+                let max = Infinity;
+                for (const [res, val] of Object.entries(cost)) {
+                    const have = colony[res] || 0;
+                    if (val > 0) {
+                        max = Math.min(max, Math.floor(have / val));
+                    }
+                }
+                return max === Infinity ? 0 : max;
+            };
+
+            const handleBuild = async (structId, buildAmount) => {
+                try {
+                    await apiRequest('build', 'POST', {
+                        colony_id: colony.id,
+                        structure: structId,
+                        amount: buildAmount
+                    }, session);
+                    onSuccess(`Construction Started: ${buildAmount}x ${structId}`);
+                } catch (e) {
+                    onSuccess("Build Error: " + e.message, 'error');
+                }
+            };
+
+            return (
+                <div className="space-y-4">
+                    <div className="flex bg-gray-900 p-1 rounded border border-gray-700">
+                        {[1, 5, 10, 'MAX'].map(n => (
+                            <button key={n}
+                                onClick={() => setAmount(n)}
+                                className={`flex-1 py-1 text-xs font-bold rounded transition-all ${amount === n ? 'bg-neon-blue text-black shadow-[0_0_10px_rgba(0,210,255,0.5)]' : 'text-gray-400 hover:text-white'}`}
+                            >
+                                {n === 'MAX' ? 'MAX' : `x${n}`}
+                            </button>
+                        ))}
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-[60vh] overflow-y-auto custom-scrollbar">
+                        {structures.map(b => {
+                            const maxBuildable = getAffordableMax(b.cost);
+                            const currentAmount = amount === 'MAX' ? (maxBuildable > 0 ? maxBuildable : 1) : amount;
+                            const canAfford = maxBuildable >= currentAmount;
+                            
+                            return (
+                                <div key={b.id} className={`p-3 rounded border relative overflow-hidden transition-all group ${canAfford ? 'bg-gray-900/80 border-gray-700 hover:border-neon-blue' : 'bg-gray-900/40 border-gray-800 opacity-70'}`}>
+                                    <div className="flex justify-between items-start mb-2 relative z-10">
+                                        <div>
+                                            <div className="font-bold text-sm text-white">{b.name}</div>
+                                            <div className="text-[10px] text-gray-500">{b.desc}</div>
+                                        </div>
+                                        <div className="text-right">
+                                            <div className="text-[10px] uppercase font-bold text-gray-600">Owned</div>
+                                            <div className="font-mono text-xs text-neon-blue">{colony.buildings?.[b.id] || 0}</div>
+                                        </div>
+                                    </div>
+
+                                    {/* Cost Breakdown */}
+                                    <div className="space-y-1 mb-3 relative z-10 bg-black/50 p-2 rounded">
+                                        {Object.entries(b.cost).map(([res, baseCost]) => {
+                                            const totalCost = baseCost * currentAmount;
+                                            const have = colony[res] || 0;
+                                            const isEnough = have >= totalCost;
+                                            return (
+                                                <div key={res} className="flex justify-between items-center text-[10px] font-mono">
+                                                    <span className="text-gray-400 uppercase">{res}</span>
+                                                    <div className="flex gap-1">
+                                                        <span className={isEnough ? "text-gray-300" : "text-neon-red font-bold"}>{totalCost}</span>
+                                                        <span className="text-gray-600">/</span>
+                                                        <span className="text-gray-500">{formatNumber(have)}</span>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+
+                                    <button
+                                        onClick={() => handleBuild(b.id, currentAmount)}
+                                        disabled={!canAfford}
+                                        className={`w-full py-2 rounded text-xs font-bold border transition-all relative z-10 flex items-center justify-center gap-2 ${canAfford ? 'bg-neon-blue/10 border-neon-blue text-neon-blue hover:bg-neon-blue/20' : 'bg-gray-800 border-gray-600 text-gray-500 cursor-not-allowed'}`}
+                                    >
+                                        <Icon name="hammer" size={12} />
+                                        {canAfford ? `BUILD ${currentAmount}` : 'INSUFFICIENT RES'}
+                                    </button>
+                                </div>
+                            );
+                        })}
+                    </div>
+                </div>
+            );
+        };
+
+        const Shipyard = ({ colony, session, onSuccess }) => {
+            const [hull, setHull] = useState('Fighter');
+            const [modules, setModules] = useState([]);
+            
+            const hulls = {
+                'Fighter': { eng: 1, wpn: 4, spec: 0, desc: 'Patrol Craft', sprite: SPRITES.fighter },
+                'Colonizer': { eng: 2, wpn: 0, spec: 1, desc: 'Settler Ark', sprite: SPRITES.colonizer },
+                'Frigate': { eng: 4, wpn: 0, spec: 0, desc: 'Heavy Hauler', sprite: SPRITES.frigate },
+                'Bomber': { eng: 1, wpn: 0, spec: 1, desc: 'Siege Unit', sprite: SPRITES.bomber }
+            };
+
+            const availModules = [
+                { id: 'propeller', name: 'Propeller', cost: 50 },
+                { id: 'booster', name: 'Booster', cost: 100 },
+                { id: 'warp_drive', name: 'Warp Drive', cost: 1000 },
+                { id: 'laser', name: 'Laser', cost: 200 },
+                { id: 'railgun', name: 'Railgun', cost: 300 },
+                { id: 'bomb_bay', name: 'Bomb Bay', cost: 500 },
+                { id: 'colony_kit', name: 'Colony Kit', cost: 5000 },
+                { id: 'probe_scanner', name: 'Scanner', cost: 500 },
+            ];
+
+            const handleBuild = async () => {
+                if (!colony.buildings || !colony.buildings['shipyard']) {
+                    onSuccess("You must build a Shipyard structure first!", 'error');
+                    return;
+                }
+
+                const payload = hull === 'Colonizer' 
+                    ? { laborers: 100, specialists: 0, culture: 10, resources: { food: 500, iron: 500 } }
+                    : { laborers: 0, specialists: 0, culture: 0, resources: {} };
+
+                try {
+                    await apiRequest('construct', 'POST', {
+                        colony_id: colony.id,
+                        hull_class: hull,
+                        modules: modules,
+                        payload
+                    }, session);
+                    onSuccess("Construction Started");
+                    setModules([]);
+                } catch (e) {
+                    onSuccess("Failed: " + e.message, 'error');
+                }
+            };
+
+            const toggleModule = (modId) => setModules(prev => [...prev, modId]);
+            const clearModules = () => setModules([]);
+            
+            const totalCost = useMemo(() => {
+                let iron = 1000; // Base Hull
+                modules.forEach(m => {
+                    const mod = availModules.find(am => am.id === m);
+                    if(mod) iron += mod.cost;
+                });
+                return iron;
+            }, [modules]);
+
+            const canAffordShip = colony.iron >= totalCost;
+
+            return (
+                <div className="space-y-4">
+                    {!colony.buildings?.shipyard && (
+                         <div className="bg-red-900/30 border border-red-500 text-red-200 p-3 rounded text-sm mb-2">
+                            ⚠️ Structure Required: Shipyard
+                        </div>
+                    )}
+                
+                    <div className="grid grid-cols-2 gap-2">
+                        {Object.keys(hulls).map(h => (
+                            <button key={h} onClick={() => setHull(h)}
+                                className={`p-3 rounded border text-left transition-all relative overflow-hidden ${hull === h ? 'border-neon-blue bg-neon-blue/10 shadow-[0_0_10px_rgba(0,210,255,0.1)]' : 'border-gray-700 hover:bg-gray-800'}`}>
+                                <div className="relative z-10">
+                                    <div className={`font-bold ${hull === h ? "text-neon-blue" : "text-gray-300"}`}>{h}</div>
+                                    <div className="text-[10px] text-gray-500 font-mono">{hulls[h].desc}</div>
+                                </div>
+                                <img src={hulls[h].sprite} className="absolute -right-2 -bottom-2 w-12 h-12 opacity-20 pixel-art" onError={(e) => e.target.style.display='none'} />
+                            </button>
+                        ))}
+                    </div>
+
+                    <div className="glass-panel p-3 rounded bg-black/40">
+                         <div className="flex justify-between items-center mb-2">
+                            <span className="text-[10px] uppercase font-bold text-gray-500 tracking-wider">Modules</span>
+                            <span className={`text-xs font-mono ${canAffordShip ? 'text-neon-green' : 'text-neon-red'}`}>Cost: {totalCost} Fe</span>
+                        </div>
+                        <div className="flex flex-wrap gap-2 min-h-[40px]">
+                            {modules.map((m, i) => (
+                                <span key={i} className="bg-gray-800 text-[10px] px-2 py-1 rounded border border-gray-600 text-gray-300 flex items-center gap-1">
+                                    {m}
+                                </span>
+                            ))}
+                            {modules.length === 0 && <span className="text-gray-700 text-xs italic">Empty slots...</span>}
+                        </div>
+                         <div className="flex justify-end mt-1">
+                             <button onClick={clearModules} className="text-[10px] text-neon-red hover:text-red-400">RESET</button>
+                         </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 max-h-40 overflow-y-auto custom-scrollbar">
+                        {availModules.map(m => (
+                            <button key={m.id} onClick={() => toggleModule(m.id)} className="group p-2 border border-gray-800 hover:border-neon-green bg-gray-900/50 rounded text-xs flex justify-between items-center transition-all">
+                                <span className="text-gray-400 group-hover:text-white">{m.name}</span>
+                                <span className="font-mono text-gray-600 group-hover:text-neon-green">{m.cost}Fe</span>
+                            </button>
+                        ))}
+                    </div>
+
+                    <button onClick={handleBuild} disabled={!canAffordShip} className={`w-full font-bold py-3 rounded mt-4 transition-all ${canAffordShip ? 'bg-neon-green/10 hover:bg-neon-green/20 border border-neon-green text-neon-green shadow-[0_0_10px_rgba(0,255,157,0.1)]' : 'bg-gray-800 border border-gray-600 text-gray-500 cursor-not-allowed'}`}>
+                        {canAffordShip ? 'INITIATE CONSTRUCTION' : 'INSUFFICIENT RESOURCES'}
+                    </button>
+                </div>
+            );
+        };
+
+        const PolicyControl = ({ colony, session, onSuccess }) => {
+             const policies = [
+                { id: 'strict_rationing', name: 'Strict Rationing', desc: 'Halves food/water use. -15 Stability. Stops growth.', icon: 'utensils-crossed' },
+                { id: 'propaganda', name: 'Propaganda', desc: 'Costs 5 Fuel/tick. +10 Stability.', icon: 'megaphone' },
+                { id: 'border_lockdown', name: 'Border Lockdown', desc: 'Costs 2 Steel/tick. +2 Security.', icon: 'shield-alert' },
+                { id: 'subsidized_housing', name: 'Subsidized Housing', desc: 'Costs 50 Credits/tick. Increases Pop Cap.', icon: 'home' },
+                { id: 'forced_labor', name: 'Forced Labor', desc: '+50% Production, -20 Stability', icon: 'hammer' }
+            ];
+
+            const togglePolicy = async (pid) => {
+                const newPolicies = { ...colony.policies, [pid]: !colony.policies[pid] };
+                try {
+                    await apiRequest('colony/policy', 'POST', { colony_id: colony.id, policies: newPolicies }, session);
+                    onSuccess("Policy Updated");
+                } catch (e) {
+                    console.error(e);
+                }
+            };
+
+            return (
+                <div className="grid grid-cols-1 gap-2">
+                    {policies.map(p => {
+                        const isActive = colony.policies && colony.policies[p.id];
+                        return (
+                            <button key={p.id} onClick={() => togglePolicy(p.id)}
+                                className={`p-3 rounded border flex items-center justify-between text-left transition-all ${isActive ? 'bg-neon-blue/10 border-neon-blue' : 'bg-gray-900 border-gray-800 opacity-60 hover:opacity-100'}`}>
+                                <div className="flex items-center gap-3">
+                                    <div className={`p-2 rounded-full ${isActive ? 'bg-neon-blue/20 text-neon-blue' : 'bg-gray-800 text-gray-600'}`}>
+                                        <Icon name={p.icon} size={16} />
+                                    </div>
+                                    <div>
+                                        <div className={`font-bold text-sm ${isActive ? "text-white" : "text-gray-400"}`}>{p.name}</div>
+                                        <div className="text-[10px] text-gray-500">{p.desc}</div>
+                                    </div>
+                                </div>
+                                <div className={`w-2 h-2 rounded-full ${isActive ? 'bg-neon-green shadow-[0_0_5px_#00ff9d]' : 'bg-gray-800'}`}></div>
+                            </button>
+                        )
+                    })}
+                </div>
+            );
+        };
+
+        const BankTerminal = ({ colony, session, onSuccess }) => {
+            const [item, setItem] = useState("fuel");
+            const [amount, setAmount] = useState(100);
+
+            const handleSell = async () => {
+                try {
+                    await apiRequest('bank/burn', 'POST', {
+                        colony_id: colony.id,
+                        item: item,
+                        amount: parseInt(amount)
+                    }, session);
+                    onSuccess("Assets Liquidated for Credits");
+                } catch (e) {
+                    onSuccess("Transaction Failed: " + e.message, 'error');
+                }
+            };
+
+            const resources = ["fuel", "food", "iron", "steel", "uranium", "platinum", "diamond", "wine"];
+
+            return (
+                <div className="space-y-4">
+                    <div className="bg-black/40 p-4 rounded border border-gray-800 text-center mb-4">
+                         <div className="text-xs text-gray-500 uppercase tracking-widest mb-1">Planetary Reserve</div>
+                         <div className="text-xl font-mono text-neon-green font-bold">{formatNumber(colony[item] || 0)} <span className="text-xs text-gray-600">UNITS</span></div>
+                    </div>
+
+                    <div className="space-y-2">
+                        <label className="text-xs text-gray-500 uppercase font-bold">Asset Type</label>
+                        <div className="grid grid-cols-4 gap-2">
+                            {resources.map(r => (
+                                <button key={r} onClick={() => setItem(r)} 
+                                    className={`p-2 rounded border text-[10px] font-bold uppercase transition-all ${item === r ? 'bg-neon-green text-black border-neon-green' : 'bg-gray-800 text-gray-500 border-gray-700 hover:border-gray-500'}`}>
+                                    {r}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+
+                    <div>
+                         <label className="text-xs text-gray-500 uppercase font-bold">Liquidation Amount</label>
+                         <input type="number" value={amount} onChange={e => setAmount(e.target.value)} className="w-full bg-black border border-gray-700 p-3 rounded text-white font-mono mt-1 focus:border-neon-green focus:outline-none" />
+                    </div>
+
+                    <button onClick={handleSell} className="w-full bg-neon-green/10 border border-neon-green text-neon-green font-bold py-3 rounded hover:bg-neon-green/20 transition-all flex justify-center items-center gap-2">
+                        <Icon name="dollar-sign" size={16} /> CONFIRM TRANSACTION
+                    </button>
+                </div>
+            );
+        };
+
+        const MarketPostForm = ({ session, onSuccess, colonies }) => {
+            const [item, setItem] = useState("food");
+            const [qty, setQty] = useState(100);
+            const [price, setPrice] = useState(1);
+            const [isBuy, setIsBuy] = useState(false);
+            const [origin, setOrigin] = useState(colonies[0]?.system_id || "Unknown");
+
+            const handlePost = async () => {
+                try {
+                    await apiRequest('market/order', 'POST', {
+                        item, 
+                        quantity: parseInt(qty),
+                        price: parseInt(price),
+                        is_buy: isBuy,
+                        origin_system: origin
+                    }, session);
+                    onSuccess("Order Broadcasted to Subspace");
+                } catch(e) {
+                    onSuccess("Error: " + e.message, 'error');
+                }
+            };
+
+            const resources = ["food", "iron", "fuel", "steel", "uranium", "platinum", "diamond", "wine"];
+
+            return (
+                <div className="space-y-4">
+                    <div className="flex bg-gray-900 rounded p-1 border border-gray-700">
+                        <button onClick={() => setIsBuy(true)} className={`flex-1 py-2 rounded text-xs font-bold transition-all ${isBuy ? 'bg-neon-green text-black' : 'text-gray-400 hover:text-white'}`}>BUY ORDER</button>
+                        <button onClick={() => setIsBuy(false)} className={`flex-1 py-2 rounded text-xs font-bold transition-all ${!isBuy ? 'bg-neon-purple text-white' : 'text-gray-400 hover:text-white'}`}>SELL ORDER</button>
+                    </div>
+
+                    <div className="space-y-2">
+                        <label className="text-xs text-gray-500 uppercase font-bold">Resource</label>
+                        <div className="grid grid-cols-4 gap-2">
+                            {resources.map(r => (
+                                <button key={r} onClick={() => setItem(r)} 
+                                    className={`p-2 rounded border text-[10px] font-bold uppercase transition-all ${item === r ? (isBuy ? 'bg-neon-green/20 border-neon-green text-white' : 'bg-neon-purple/20 border-neon-purple text-white') : 'bg-gray-800 text-gray-500 border-gray-700 hover:border-gray-500'}`}>
+                                    {r}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                        <div>
+                            <label className="text-xs text-gray-500 uppercase font-bold">Quantity</label>
+                            <input type="number" value={qty} onChange={e => setQty(e.target.value)} className="w-full bg-black border border-gray-700 p-2 rounded text-white mt-1" />
+                        </div>
+                        <div>
+                            <label className="text-xs text-gray-500 uppercase font-bold">Price (Cr)</label>
+                            <input type="number" value={price} onChange={e => setPrice(e.target.value)} className="w-full bg-black border border-gray-700 p-2 rounded text-white mt-1" />
+                        </div>
+                    </div>
+
+                    <button onClick={handlePost} className={`w-full border font-bold py-3 rounded hover:bg-opacity-20 transition-all ${isBuy ? 'bg-neon-green/10 border-neon-green text-neon-green' : 'bg-neon-purple/10 border-neon-purple text-neon-purple'}`}>
+                        {isBuy ? 'POST BUY ORDER' : 'POST SELL ORDER'}
+                    </button>
+                </div>
+            );
+        };
+
+        const MarketView = ({ session, setModal, onSuccess }) => {
+            const [orders, setOrders] = useState([]);
+            const [filter, setFilter] = useState('all'); // all, buy, sell
+            
+            const fetchOrders = () => {
+                apiRequest('market/list', 'GET', null, session)
+                .then(data => {
+                    if (Array.isArray(data)) {
+                        setOrders(data);
+                    } else if (data && Array.isArray(data.orders)) {
+                        setOrders(data.orders);
+                    } else {
+                        console.warn("Market API returned unexpected format", data);
+                        setOrders([]); 
+                    }
+                })
+                .catch(err => {
+                    console.error("Market Error", err);
+                    setOrders([]);
+                });
+            };
+
+            const handleTrade = async (order) => {
+                const action = order.is_buy ? "Selling to Buyer" : "Buying from Seller";
+                if (!confirm(`Confirm ${action}: ${order.quantity} ${order.item} for ${order.quantity * order.price} Credits?`)) return;
+
+                try {
+                    await apiRequest('market/accept', 'POST', { order_id: order.id }, session);
+                    onSuccess && onSuccess(`Transaction Complete: ${action}`);
+                    fetchOrders();
+                } catch(e) {
+                    onSuccess && onSuccess(e.message, 'error');
+                }
+            };
+
+            useEffect(() => {
+                fetchOrders();
+            }, []);
+
+            const filteredOrders = orders.filter(o => {
+                if (filter === 'buy') return o.is_buy;
+                if (filter === 'sell') return !o.is_buy;
+                return true;
+            });
+
+            return (
+                <div className="space-y-4">
+                    <div className="flex justify-between items-center mb-4">
+                        <h3 className="text-xl font-bold text-white flex items-center gap-2"><Icon name="shopping-cart" /> Market</h3>
+                        <div className="flex gap-2">
+                             <button onClick={fetchOrders} className="p-2 bg-gray-800 border border-gray-600 rounded hover:border-white transition-all text-gray-400 hover:text-white">
+                                <Icon name="refresh-cw" size={16} />
+                            </button>
+                            <button onClick={() => setModal({type:'market_post'})} className="bg-neon-blue/20 text-neon-blue px-4 py-2 rounded text-xs font-bold border border-neon-blue hover:bg-neon-blue/30 transition-all">POST ORDER</button>
+                        </div>
+                    </div>
+
+                    <div className="flex gap-2 mb-4 border-b border-gray-800 pb-2">
+                        <button onClick={() => setFilter('all')} className={`text-xs font-bold px-3 py-1 rounded transition-all ${filter === 'all' ? 'text-white bg-gray-700' : 'text-gray-500 hover:text-white'}`}>ALL</button>
+                        <button onClick={() => setFilter('buy')} className={`text-xs font-bold px-3 py-1 rounded transition-all ${filter === 'buy' ? 'text-neon-green bg-neon-green/10' : 'text-gray-500 hover:text-neon-green'}`}>BUYING</button>
+                        <button onClick={() => setFilter('sell')} className={`text-xs font-bold px-3 py-1 rounded transition-all ${filter === 'sell' ? 'text-neon-purple bg-neon-purple/10' : 'text-gray-500 hover:text-neon-purple'}`}>SELLING</button>
+                    </div>
+                    
+                    <div className="grid grid-cols-1 gap-2">
+                        {(!orders || orders.length === 0) && <div className="text-gray-500 text-center py-8 italic">No active broadcasts on subspace channels.</div>}
+                        
+                        {filteredOrders.map(o => (
+                            <div key={o.id} className="glass-panel p-4 rounded border-l-4 border-l-gray-700 hover:border-l-neon-blue transition-all flex justify-between items-center group">
+                                <div>
+                                    <div className="flex gap-2 items-center mb-1">
+                                        <span className={`text-[10px] px-2 py-0.5 rounded font-bold tracking-wider ${o.is_buy ? 'bg-neon-green/10 text-neon-green border border-neon-green/30' : 'bg-neon-purple/10 text-neon-purple border border-neon-purple/30'}`}>
+                                            {o.is_buy ? 'BUYING' : 'SELLING'}
+                                        </span>
+                                        <span className="font-bold text-white tracking-wide">{o.item.toUpperCase()}</span>
+                                    </div>
+                                    <div className="text-[10px] text-gray-400 font-mono">
+                                        ID: {o.id.substring(0,8)}... | SYS: <span className="text-gray-300">{o.origin_system}</span>
+                                    </div>
+                                </div>
+                                <div className="flex items-center gap-4">
+                                    <div className="text-right">
+                                        <div className="text-xl font-mono text-neon-amber font-bold">{formatNumber(o.quantity * o.price)} <span className="text-xs text-gray-500">CR</span></div>
+                                        <div className="text-[10px] text-gray-500">{o.quantity} units @ {o.price}cr/u</div>
+                                    </div>
+                                    <button onClick={() => handleTrade(o)} className={`px-3 py-2 rounded text-xs font-bold border transition-all ${o.is_buy ? 'bg-gray-800 text-gray-300 border-gray-600 hover:border-neon-green hover:text-neon-green' : 'bg-gray-800 text-gray-300 border-gray-600 hover:border-neon-purple hover:text-neon-purple'}`}>
+                                        {o.is_buy ? 'SELL' : 'BUY'}
+                                    </button>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            );
+        };
+
+        const FederationView = ({ session }) => {
+            const [peers, setPeers] = useState([]);
+            
+            useEffect(() => {
+                apiRequest('federation/peers', 'GET', null, session)
+                    .then(data => {
+                        if (Array.isArray(data)) {
+                            setPeers(data);
+                        } else if (data && Array.isArray(data.peers)) {
+                            setPeers(data.peers);
+                        } else {
+                            setPeers([]);
+                        }
+                    })
+                    .catch(e => {
+                        console.error(e);
+                        setPeers([]);
+                    });
+            }, []);
+
+            const toggleAlly = async (uuid) => {
+                try {
+                    await apiRequest('federation/ally', 'POST', { target_uuid: uuid }, session);
+                    const updated = await apiRequest('federation/peers', 'GET', null, session);
+                    
+                    if (Array.isArray(updated)) {
+                        setPeers(updated);
+                    } else if (updated && Array.isArray(updated.peers)) {
+                        setPeers(updated.peers);
+                    }
+                } catch(e) { alert(e.message); }
+            }
+
+            return (
+                <div className="space-y-4">
+                    <h3 className="text-xl font-bold text-white mb-4 flex items-center gap-2"><Icon name="globe" /> Galaxy Peers</h3>
+                    <div className="grid grid-cols-1 gap-2">
+                        {peers.length === 0 && <div className="text-gray-500 text-center py-8 italic">Deep range sensors detecting no signals.</div>}
+                        {peers.map(p => (
+                            <div key={p.UUID} className={`glass-panel p-4 rounded flex justify-between items-center border-l-4 transition-all ${p.Relation === 1 ? 'border-l-neon-green bg-neon-green/5' : (p.Relation === 2 ? 'border-l-neon-red' : 'border-l-gray-600')}`}>
+                                <div className="truncate w-1/2">
+                                    <div className="font-bold text-sm text-gray-300 truncate flex items-center gap-2">
+                                        <Icon name="server" size={14} />
+                                        {p.UUID.substring(0,12)}...
+                                    </div>
+                                    <div className="text-[10px] text-gray-500 font-mono mt-1">{p.Url}</div>
+                                </div>
+                                <div className="flex items-center gap-4">
+                                    <div className="text-right">
+                                        <div className="text-[10px] text-gray-400 uppercase">Trust Score</div>
+                                        <div className={`font-bold font-mono ${p.Reputation > 0 ? 'text-neon-blue' : 'text-gray-500'}`}>{p.Reputation.toFixed(1)}</div>
+                                    </div>
+                                    <button onClick={() => toggleAlly(p.UUID)} 
+                                        className={`text-[10px] px-3 py-1.5 rounded font-bold border transition-all ${p.Relation === 1 ? 'bg-neon-green/20 text-neon-green border-neon-green' : 'bg-gray-800 text-gray-400 border-gray-600 hover:border-white hover:text-white'}`}>
+                                        {p.Relation === 1 ? 'ALLIED' : 'NEUTRAL'}
+                                    </button>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            );
+        };
+
+        const CargoTransfer = ({ fleet, colonies, session, onSuccess }) => {
+            const [targetColony, setTargetColony] = useState(colonies[0]?.id || "");
+            const [item, setItem] = useState("food");
+            const [amount, setAmount] = useState(100);
+
+            const handleTransfer = async (direction) => { 
+                const finalAmt = direction * parseInt(amount);
+                try {
+                    await apiRequest('fleet/transfer', 'POST', {
+                        fleet_id: fleet.id,
+                        colony_id: parseInt(targetColony),
+                        transfers: { [item]: finalAmt }
+                    }, session);
+                    onSuccess("Cargo Transferred");
+                } catch (e) {
+                    onSuccess(e.message, 'error');
+                }
+            };
+
+            const resources = ["food", "iron", "steel", "wine", "laborers"];
+
+            return (
+                <div className="space-y-4">
+                    <div className="text-sm text-gray-400">Transferring between Fleet {fleet.id} and:</div>
+                    <select value={targetColony} onChange={e => setTargetColony(e.target.value)} className="w-full bg-black border border-gray-700 p-2 rounded text-white">
+                        {colonies.filter(c => c.system_id === fleet.origin_system).map(c => (
+                            <option key={c.id} value={c.id}>{c.name}</option>
+                        ))}
+                    </select>
+                    
+                    <div className="flex gap-2">
+                        <select value={item} onChange={e => setItem(e.target.value)} className="flex-1 bg-black border border-gray-700 p-2 rounded text-white capitalize">
+                            {resources.map(r => <option key={r} value={r}>{r}</option>)}
+                        </select>
+                        <input type="number" value={amount} onChange={e => setAmount(e.target.value)} className="w-24 bg-black border border-gray-700 p-2 rounded text-white" />
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4 pt-2">
+                        <button onClick={() => handleTransfer(-1)} className="bg-gray-800 border border-gray-600 hover:border-neon-blue text-white py-2 rounded">
+                            To Colony &darr;
+                        </button>
+                        <button onClick={() => handleTransfer(1)} className="bg-gray-800 border border-gray-600 hover:border-neon-blue text-white py-2 rounded">
+                            To Fleet &uarr;
+                        </button>
+                    </div>
+                </div>
+            );
+        };
+
+        const Dashboard = ({ session, onLogout }) => {
+            const [tab, setTab] = useState('colonies');
+            const [state, setState] = useState({ colonies: [], fleets: [], credits: 0 });
+            const [status, setStatus] = useState({ tick: 0, leader: '...' });
+            const [toast, setToast] = useState(null);
+            const [modal, setModal] = useState(null); 
+            const [scanResult, setScanResult] = useState(null);
+
+            // Smart Calculation: Active Colony
+            const activeColony = useMemo(() => {
+                if (modal && modal.data && modal.data.id) {
+                    return state.colonies.find(c => c.id === modal.data.id) || modal.data;
+                }
+                return state.colonies[0]; 
+            }, [state.colonies, modal]);
+
+            const refresh = useCallback(async () => {
+                try {
+                    const [stData, sData] = await Promise.all([
+                        apiRequest('state', 'GET', null, session),
+                        apiRequest('status', 'GET', null, session)
+                    ]);
+                    setState(stData);
+                    setStatus(sData);
+                } catch (e) { console.error(e); }
+            }, [session]);
+
+            useEffect(() => {
+                refresh();
+                const interval = setInterval(refresh, 2000);
+                return () => clearInterval(interval);
+            }, [refresh]);
+
+            const handleAction = async (action, payload) => {
+                try {
+                    const res = await apiRequest(action, 'POST', payload, session);
+                    setToast({ msg: res.message || "Command Executed", type: 'success' });
+                    refresh();
+                } catch (e) {
+                    setToast({ msg: e.message, type: 'error' });
+                }
+            };
+
+            const closeModal = () => { setModal(null); refresh(); };
+
+            // Renderers
+            const renderColonies = () => (
+                <div className="space-y-6">
+                    {state.colonies.map(c => (
+                        <div key={c.id} className="glass-panel p-5 rounded-xl border-l-4 border-l-neon-purple relative overflow-hidden group">
+                            {/* Background image for province */}
+                            <div className="absolute top-0 right-0 w-32 h-32 opacity-10 pointer-events-none">
+                                <img src={SPRITES.colony} className="w-full h-full pixel-art grayscale group-hover:grayscale-0 transition-all duration-500" onError={(e) => e.target.style.display='none'} />
+                            </div>
+
+                            <div className="relative z-10">
+                                <div className="flex justify-between items-start mb-6">
+                                    <div>
+                                        <h3 className="font-black text-xl text-white tracking-tight flex items-center gap-2">
+                                            {c.name}
+                                            {c.parent_id === 0 && <span className="bg-neon-purple/20 text-neon-purple text-[9px] px-2 py-0.5 rounded border border-neon-purple/30">CAPITAL</span>}
+                                        </h3>
+                                        <div className="text-xs text-gray-400 font-mono mt-1 flex items-center gap-2">
+                                            <span>SYS: {c.system_id}</span>
+                                            <span className="text-gray-600">•</span>
+                                            <span>{formatNumber(c.pop_laborers)} CITIZENS</span>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <div className="grid grid-cols-2 gap-4 mb-6">
+                                    <div className="bg-black/40 rounded p-3 border border-gray-800">
+                                        <div className="text-[10px] font-bold text-gray-500 mb-2 uppercase tracking-wider">Strategic Resources</div>
+                                        <div className="space-y-1">
+                                            <div className="flex justify-between text-xs"><span className="text-gray-400">Uranium</span><span className="text-neon-green font-mono">{formatNumber(c.uranium)}</span></div>
+                                            <div className="flex justify-between text-xs"><span className="text-gray-400">Platinum</span><span className="text-neon-blue font-mono">{formatNumber(c.platinum)}</span></div>
+                                            <div className="flex justify-between text-xs"><span className="text-gray-400">Diamond</span><span className="text-white font-mono">{formatNumber(c.diamond)}</span></div>
+                                        </div>
+                                    </div>
+                                    <div className="bg-black/40 rounded p-3 border border-gray-800">
+                                        <div className="text-[10px] font-bold text-gray-500 mb-2 uppercase tracking-wider">Industrial Output</div>
+                                        <div className="space-y-1">
+                                            <div className="flex justify-between text-xs"><span className="text-gray-400">Steel</span><span className="text-gray-300 font-mono">{formatNumber(c.steel)}</span></div>
+                                            <div className="flex justify-between text-xs"><span className="text-gray-400">Fuel</span><span className="text-neon-amber font-mono">{formatNumber(c.fuel)}</span></div>
+                                            <div className="flex justify-between text-xs"><span className="text-gray-400">Luxury Wine</span><span className="text-neon-purple font-mono">{formatNumber(c.wine)}</span></div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar">
+                                    <button onClick={() => setModal({type:'build', data:c})} className="flex items-center gap-2 bg-gray-800 hover:bg-gray-700 px-4 py-2 rounded text-xs font-bold text-white transition-all border border-gray-700 hover:border-neon-blue whitespace-nowrap">
+                                        <Icon name="hammer" size={14} className="text-neon-blue" /> CONSTRUCT
+                                    </button>
+                                    <button onClick={() => setModal({type:'shipyard', data:c})} className="flex items-center gap-2 bg-gray-800 hover:bg-gray-700 px-4 py-2 rounded text-xs font-bold text-white transition-all border border-gray-700 hover:border-neon-purple whitespace-nowrap">
+                                        <Icon name="rocket" size={14} className="text-neon-purple" /> SHIPYARD
+                                    </button>
+                                    <button onClick={() => setModal({type:'policy', data:c})} className="flex items-center gap-2 bg-gray-800 hover:bg-gray-700 px-4 py-2 rounded text-xs font-bold text-white transition-all border border-gray-700 hover:border-neon-red whitespace-nowrap">
+                                        <Icon name="scale" size={14} className="text-neon-red" /> POLICY
+                                    </button>
+                                    <button onClick={() => setModal({type: 'bank', data: c})} className="flex items-center gap-2 bg-gray-800 hover:bg-gray-700 px-4 py-2 rounded text-xs font-bold text-white transition-all border border-gray-700 hover:border-neon-green whitespace-nowrap">
+                                        <Icon name="dollar-sign" size={14} className="text-neon-green" /> BANK
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            );
+
+            const renderFleets = () => (
+                <div className="space-y-4">
+                    {state.fleets.map(f => (
+                        <div key={f.id} className="glass-panel p-4 rounded-xl border-l-4 border-l-neon-blue relative overflow-hidden">
+                            {/* Ship Sprite */}
+                            <div className="absolute top-2 right-2 opacity-20">
+                                <img src={SPRITES[f.hull_class.toLowerCase()] || SPRITES.fighter} className="w-16 h-16 pixel-art" onError={(e) => e.target.style.display='none'} />
+                            </div>
+
+                            <div className="relative z-10">
+                                <div className="flex justify-between items-center mb-3">
+                                    <div className="font-black text-lg text-white">{f.hull_class.toUpperCase()} <span className="text-xs font-mono text-gray-500">#{f.id}</span></div>
+                                    <div className={`text-[10px] font-bold px-2 py-1 rounded border ${f.status === 'ORBIT' ? 'bg-neon-green/10 text-neon-green border-neon-green/30' : 'bg-neon-amber/10 text-neon-amber border-neon-amber/30'}`}>
+                                        {f.status}
+                                    </div>
+                                </div>
+                                
+                                <div className="grid grid-cols-2 gap-4 mb-4 text-xs text-gray-400">
+                                    <div>
+                                        <div className="uppercase font-bold text-gray-600 mb-1">Current Position</div>
+                                        <div className="text-white font-mono">{f.dest_system || f.origin_system}</div>
+                                    </div>
+                                    <div>
+                                        <div className="uppercase font-bold text-gray-600 mb-1">Fuel Reserves</div>
+                                        <div className={f.fuel < 100 ? "text-neon-red font-mono" : "text-neon-blue font-mono"}>{f.fuel}</div>
+                                    </div>
+                                </div>
+
+                                {f.status === 'ORBIT' && (
+                                    <div className="grid grid-cols-2 gap-2">
+                                        <button onClick={() => {
+                                            const sys = prompt("Target System ID (e.g. sys-0-0-0):");
+                                            if(sys) handleAction('fleet/launch', {fleet_id: f.id, target_system: sys});
+                                        }} className="bg-neon-blue/10 hover:bg-neon-blue/20 text-neon-blue border border-neon-blue/50 py-2 rounded text-xs font-bold transition-all">
+                                            LAUNCH MISSION
+                                        </button>
+                                        
+                                        {f.hull_class === 'Colonizer' ? (
+                                            <button onClick={() => {
+                                                const name = prompt("New Colony Name:");
+                                                if(name) handleAction('deploy', {fleet_id: f.id, name});
+                                            }} className="bg-neon-purple/10 hover:bg-neon-purple/20 text-neon-purple border border-neon-purple/50 py-2 rounded text-xs font-bold transition-all">
+                                                ESTABLISH COLONY
+                                            </button>
+                                        ) : (
+                                            <button onClick={() => setModal({type:'cargo', data:f})} className="bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-600 py-2 rounded text-xs font-bold transition-all">
+                                                CARGO MANIFEST
+                                            </button>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    ))}
+                    {state.fleets.length === 0 && <div className="text-center text-gray-500 mt-10">No active fleets in sector.</div>}
+                </div>
+            );
+
+            return (
+                <div className="min-h-screen pb-20 bg-transparent">
+                    {/* Header */}
+                    <header className="fixed top-0 left-0 right-0 h-16 glass-panel z-40 px-4 flex justify-between items-center neon-border bg-space-900/90">
+                        <div className="flex items-center gap-4">
+                            <div className="w-8 h-8 bg-gradient-to-br from-neon-blue to-neon-purple rounded flex items-center justify-center font-bold text-black text-xs">OW</div>
+                            <div>
+                                <div className="text-white font-black text-lg tracking-tight">OWNWORLD</div>
+                                <div className="text-[9px] text-neon-blue font-mono tracking-wider">COMMANDER // {session.username.toUpperCase()}</div>
+                            </div>
+                        </div>
+                        <div className="text-right">
+                            <div className="text-[9px] text-gray-400 font-bold tracking-wider">GALACTIC TICK</div>
+                            <div className="text-white font-mono font-bold">{status.tick}</div>
+                        </div>
+                    </header>
+
+                    {/* Persistent Stats Bar */}
+                    <StatBar colony={activeColony} credits={state.credits} />
+
+                    {/* Main Content Area */}
+                    <main className="pt-36 px-4 max-w-3xl mx-auto">
+                        {tab === 'colonies' && renderColonies()}
+                        {tab === 'fleets' && renderFleets()}
+                        {tab === 'market' && <MarketView session={session} setModal={setModal} onSuccess={(msg, type='success') => setToast({msg, type})} />}
+                        {tab === 'federation' && <FederationView session={session} />}
+                        {tab === 'map' && (
+                            <div className="glass-panel rounded-xl p-6 text-center">
+                                <div className="w-20 h-20 bg-neon-blue/10 rounded-full flex items-center justify-center mx-auto mb-6 border border-neon-blue/30 shadow-[0_0_30px_rgba(0,210,255,0.1)]">
+                                    <Icon name="radar" size={40} className="text-neon-blue animate-pulse-slow" />
+                                </div>
+                                <h3 className="text-2xl font-bold text-white mb-2">Deep Space Array</h3>
+                                <p className="text-gray-400 text-sm mb-8">Enter galactic coordinates to probe for habitable systems.</p>
+                                
+                                <div className="flex gap-4 justify-center mb-8">
+                                    {['X', 'Y', 'Z'].map(axis => (
+                                        <div key={axis} className="relative">
+                                            <div className="absolute -top-2 left-2 text-[9px] font-bold text-neon-blue bg-space-900 px-1">{axis}</div>
+                                            <input id={`scan${axis}`} defaultValue="0" className="w-20 bg-black border border-gray-700 p-3 rounded text-center font-mono text-white focus:border-neon-blue focus:outline-none" />
+                                        </div>
+                                    ))}
+                                </div>
+                                
+                                <button onClick={async () => {
+                                    const x = parseInt(document.getElementById('scanX').value);
+                                    const y = parseInt(document.getElementById('scanY').value);
+                                    const z = parseInt(document.getElementById('scanZ').value);
+                                    try {
+                                        const res = await apiRequest('scan', 'POST', {x,y,z}, session);
+                                        setScanResult(res);
+                                        setModal({type: 'scan_result'});
+                                    } catch(e) {
+                                        setToast({msg: "Scan Failed: " + e.message, type:'error'});
+                                    }
+                                }} className="bg-neon-blue hover:bg-neon-blue/80 text-black font-bold py-3 px-8 rounded transition-all shadow-[0_0_20px_rgba(0,210,255,0.4)] hover:shadow-[0_0_30px_rgba(0,210,255,0.6)]">
+                                    INITIATE SCAN
+                                </button>
+                            </div>
+                        )}
+                    </main>
+
+                    {/* Modal Overlay */}
+                    {modal && (
+                        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/90 backdrop-blur-md p-4 animate-in fade-in duration-200">
+                            <div className="bg-space-800 w-full max-w-lg rounded-xl border border-gray-700 shadow-2xl flex flex-col max-h-[80vh]">
+                                <div className="p-4 border-b border-gray-700 flex justify-between items-center bg-space-900/50 rounded-t-xl">
+                                    <div className="font-bold text-white tracking-wide uppercase flex items-center gap-2">
+                                        <div className="w-2 h-2 bg-neon-blue rounded-full animate-pulse"></div>
+                                        {modal.type.replace('_', ' ')}
+                                    </div>
+                                    <button onClick={closeModal} className="text-gray-500 hover:text-white transition-colors"><Icon name="x" /></button>
+                                </div>
+                                
+                                <div className="p-4 overflow-y-auto custom-scrollbar">
+                                    {modal.type === 'shipyard' && <Shipyard colony={modal.data} session={session} onSuccess={(msg) => { setToast({msg, type:'success'}); closeModal(); }} />}
+                                    {modal.type === 'policy' && <PolicyControl colony={modal.data} session={session} onSuccess={(msg) => { setToast({msg, type:'success'}); closeModal(); }} />}
+                                    {modal.type === 'cargo' && <CargoTransfer fleet={modal.data} colonies={state.colonies} session={session} onSuccess={(msg) => { setToast({msg, type:'success'}); closeModal(); }} />}
+                                    {modal.type === 'market_post' && <MarketPostForm session={session} colonies={state.colonies} onSuccess={(msg) => { setToast({msg, type:'success'}); closeModal(); }} />}
+                                    {modal.type === 'bank' && <BankTerminal colony={modal.data} session={session} onSuccess={(msg) => { setToast({msg, type:'success'}); closeModal(); }} />}
+                                    {modal.type === 'build' && <BuildMenu colony={modal.data} session={session} onSuccess={(msg, type='success') => { setToast({msg, type}); closeModal(); }} />}
+                                    {modal.type === 'scan_result' && (
+                                        <div className="text-xs font-mono text-gray-300 whitespace-pre-wrap bg-black p-4 rounded border border-gray-800">
+                                            {JSON.stringify(scanResult, null, 2)}
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Nav */}
+                    <nav className="fixed bottom-0 left-0 right-0 h-20 bg-space-900/95 border-t border-gray-800 flex justify-around items-center z-40 pb-safe backdrop-blur-xl">
+                        {[
+                            { id: 'colonies', icon: 'layout-grid', label: 'EMPIRE' },
+                            { id: 'fleets', icon: 'navigation', label: 'FLEETS' },
+                            { id: 'market', icon: 'shopping-cart', label: 'MARKET' },
+                            { id: 'federation', icon: 'globe', label: 'FED' },
+                            { id: 'map', icon: 'radar', label: 'SCAN' },
+                        ].map(item => (
+                            <button key={item.id} onClick={() => setTab(item.id)} className={`flex flex-col items-center gap-1.5 w-16 transition-all ${tab === item.id ? 'text-neon-blue -translate-y-1' : 'text-gray-500 hover:text-gray-300'}`}>
+                                <div className={`p-1.5 rounded-lg ${tab === item.id ? 'bg-neon-blue/10' : 'bg-transparent'}`}>
+                                    <Icon name={item.icon} size={20} />
+                                </div>
+                                <span className="text-[9px] font-bold tracking-wider">{item.label}</span>
+                            </button>
+                        ))}
+                        <button onClick={onLogout} className="flex flex-col items-center gap-1.5 w-16 text-gray-600 hover:text-neon-red transition-all">
+                            <div className="p-1.5"><Icon name="log-out" size={20} /></div>
+                            <span className="text-[9px] font-bold tracking-wider">LOGOUT</span>
+                        </button>
+                    </nav>
+
+                    {toast && <Toast message={toast.msg} type={toast.type} onClose={() => setToast(null)} />}
+                </div>
+            );
+        };
+
+        const App = () => {
+            const [session, setSession] = useState(null);
+            useEffect(() => { if (window.lucide) window.lucide.createIcons(); }, []);
+            if (!session) return <LoginScreen onLogin={setSession} />;
+            return <Dashboard session={session} onLogout={() => setSession(null)} />;
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
