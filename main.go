@@ -160,6 +160,7 @@ func main() {
 	mux.HandleFunc("/federation/map", handleMap)
 	mux.HandleFunc("/federation/transaction", handleFederationTransaction)
 	mux.HandleFunc("/federation/heartbeat", handleHeartbeat)
+	mux.HandleFunc("/federation/reputation", handleReputationQuery) // Added this line
 
 	mux.HandleFunc("/api/register", handleRegister)
 	mux.HandleFunc("/api/deploy", handleDeploy)

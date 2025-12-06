@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strings" // Added missing import
 	"sync"
 	"sync/atomic"
 	"time"
@@ -88,8 +89,34 @@ func pruneDeadPeers() {
 
 // --- EigenTrust Implementation ---
 
+// REPLACED: Real Implementation (Network Call)
 func queryPeerOpinion(peer *Peer, targetUUID string) float64 {
-	return 0.0 // Neutral assumption without exchange data
+	// 1. Construct URL
+	// Assumes peer.Url is "http://ip:port" or similar
+	targetURL := fmt.Sprintf("%s/federation/reputation?uuid=%s", peer.Url, targetUUID)
+	if !strings.HasPrefix(peer.Url, "http") {
+		targetURL = fmt.Sprintf("http://%s/federation/reputation?uuid=%s", peer.Url, targetUUID)
+	}
+
+	// 2. Make Request (Short Timeout)
+	// We use a short timeout (1s) because we query many peers; we can't hang on one.
+	client := &http.Client{Timeout: 1 * time.Second}
+	resp, err := client.Get(targetURL)
+	if err != nil {
+		// If peer is unreachable, we assume Neutral (0.0) to avoid biasing the score.
+		return 0.0
+	}
+	defer resp.Body.Close()
+
+	// 3. Parse Response
+	var data struct {
+		Score float64 `json:"score"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return 0.0
+	}
+
+	return data.Score
 }
 
 // THE EIGENTRUST CALCULATION (The Brain)
@@ -183,39 +210,6 @@ func processGrievance(g *GrievanceReport, reporterID string) {
 
 // Restored: Logic to determine leader based on score
 func recalculateLeader() {
-	// Safety: This function usually acquires RLock or Lock depending on usage.
-	// Since we modify global LeaderUUID, let's use Lock or ensure caller handles it.
-	// However, standard practice here involves reading peers.
-	// To avoid deadlock with EnforceInfamy, we assume this is called from safe contexts or handles its own lock.
-	// Let's use a fresh RLock for the list generation.
-
-	// NOTE: Calling this from inside another Lock (like processImmigration) requires care.
-	// For this fix, we will assume it's called sequentially or we manage scope.
-	// Ideally, we copy the peers list to avoid holding the lock during sort.
-
-	// For simplicity in this fix, we will just grab the lock.
-	// If caller holds lock, this Deadlocks.
-	// Solution: Check if we are already locked? No, Go doesn't support reentrant locks.
-	// Convention: recalculateLeader is called *after* releasing locks in other functions.
-
-	// Re-acquiring lock here:
-	// peerLock.RLock() -> defer RUnlock()
-
-	// However, since processImmigration calls it inside a Lock, we should extract the logic
-	// to a version that expects the lock to be HELD, or defer the call.
-	// To fix the build error safely: We will assume it calculates based on current state.
-
-	// *TEMPORARY FIX for Threading*: We will run this in a goroutine to break the lock chain
-	// IF called from a locked context. But for immediate consistency, let's just implement the logic.
-
-	// Assuming we need to lock to read map:
-	// peerLock.RLock()
-	// defer peerLock.RUnlock()
-	// ... logic ...
-
-	// BUT `LeaderUUID` is a global variable.
-	// Let's implement it without lock inside, and ensure callers release lock before calling.
-
 	type Candidate struct {
 		UUID  string
 		Score int64

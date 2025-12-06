@@ -251,6 +251,31 @@ func handleSyncLedger(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(history)
 }
 
+// New Federation Handler: Reputation Query
+// Allows peers to query our local trust score for a specific target UUID.
+func handleReputationQuery(w http.ResponseWriter, r *http.Request) {
+	// 1. Parse the Target UUID
+	target := r.URL.Query().Get("uuid")
+	if target == "" {
+		http.Error(w, "Missing 'uuid' param", 400)
+		return
+	}
+
+	// 2. Read Local Opinion
+	peerLock.RLock()
+	peer, known := Peers[target]
+	peerLock.RUnlock()
+
+	score := 0.0
+	if known {
+		score = peer.Reputation
+	}
+
+	// 3. Return JSON
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]float64{"score": score})
+}
+
 // --- Client Handlers ---
 
 func generateSessionToken() string {
