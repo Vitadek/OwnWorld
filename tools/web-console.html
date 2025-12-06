@@ -199,25 +199,35 @@
         } catch(e) {}
     }
 
-    function updateContextSelector() {
+   function updateContextSelector() {
         const sel = document.getElementById('colony-selector');
-        const prev = ACTIVE_COLONY_ID;
         
-        // Use "colonies" (lowercase) instead of "MyColonies"
-        if (!ACTIVE_COLONY_ID && STATE.colonies && STATE.colonies.length > 0) {
-            ACTIVE_COLONY_ID = STATE.colonies[0].id;
-        }
+        // Check if we are still displaying the placeholder
+        const isPlaceholder = sel.options.length === 1 && sel.options[0].value === "";
+        const countChanged = STATE.colonies && sel.options.length !== STATE.colonies.length;
 
-        // Rebuild options if count changed (simple check)
-        if (STATE.colonies && sel.options.length !== STATE.colonies.length) {
+        // Force update if placeholder is present OR count changed
+        if (STATE.colonies && (countChanged || isPlaceholder)) {
+            
+            // Auto-select first colony if none selected
+            if (!ACTIVE_COLONY_ID && STATE.colonies.length > 0) {
+                ACTIVE_COLONY_ID = STATE.colonies[0].id;
+            }
+
             sel.innerHTML = STATE.colonies.map(c => 
                 `<option value="${c.id}">${escapeHTML(c.name)} (${c.system_id})</option>`
             ).join('');
-            sel.value = ACTIVE_COLONY_ID;
+            
+            // Restore selection if possible, otherwise default to first
+            if (ACTIVE_COLONY_ID) {
+                sel.value = ACTIVE_COLONY_ID;
+            }
         }
         
-        // Ensure active colony ID is synced
-        ACTIVE_COLONY_ID = parseInt(sel.value);
+        // Ensure global state matches UI
+        if (sel.value) {
+            ACTIVE_COLONY_ID = parseInt(sel.value);
+        }
     }
     
     function switchColonyContext() {

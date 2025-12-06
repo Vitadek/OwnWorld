@@ -35,8 +35,6 @@ func fetchGenesisFromSeed(seeds string) string {
 			continue
 		}
 
-		// Removed unused 'targetURL' definition
-
 		statusURL := seed + "/api/status"
 		if !strings.HasPrefix(seed, "http") {
 			statusURL = "http://" + seed + "/api/status"
@@ -65,6 +63,8 @@ func bootstrapFederation() {
 	seeds := os.Getenv("SEED_NODES")
 	if seeds == "" {
 		InfoLog.Println("No SEED_NODES found. Starting as Lonely/Genesis Node.")
+		// Note: We handled ServerLoc safety in main(), so we don't strictly need it here,
+		// but it's safe to leave the logic flow as is.
 		return
 	}
 
@@ -145,6 +145,15 @@ func main() {
 
 	initDB()
 
+	// --- RACE CONDITION FIX START ---
+	// We explicitly initialize ServerLoc here, synchronously.
+	// This ensures that even if bootstrapFederation() runs slowly in the background,
+	// HTTP handlers (like /register) will never see a nil ServerLoc.
+	if ServerLoc == nil {
+		ServerLoc = []int{0, 0, 0}
+	}
+	// --- RACE CONDITION FIX END ---
+
 	InfoLog.Println("OWNWORLD BOOT SEQUENCE (V3.1)")
 	InfoLog.Printf("Mode: %v | Control: %v", Config.PeeringMode, Config.CommandControl)
 
@@ -160,7 +169,7 @@ func main() {
 	mux.HandleFunc("/federation/map", handleMap)
 	mux.HandleFunc("/federation/transaction", handleFederationTransaction)
 	mux.HandleFunc("/federation/heartbeat", handleHeartbeat)
-	mux.HandleFunc("/federation/reputation", handleReputationQuery) // Added this line
+	mux.HandleFunc("/federation/reputation", handleReputationQuery)
 
 	mux.HandleFunc("/api/register", handleRegister)
 	mux.HandleFunc("/api/deploy", handleDeploy)
@@ -169,9 +178,9 @@ func main() {
 	mux.HandleFunc("/api/bank/burn", handleBankBurn)
 	mux.HandleFunc("/api/fleet/launch", handleFleetLaunch)
 	mux.HandleFunc("/api/state", handleState)
-	mux.HandleFunc("/api/scan", handleScan) // Add scan handler
-	mux.HandleFunc("/api/fleet/transfer", handleCargoTransfer) // New route
-	mux.HandleFunc("/api/colony/policy", handleSetPolicy) // New route
+	mux.HandleFunc("/api/scan", handleScan)
+	mux.HandleFunc("/api/fleet/transfer", handleCargoTransfer)
+	mux.HandleFunc("/api/colony/policy", handleSetPolicy)
 
 	mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]interface{}{

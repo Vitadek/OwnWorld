@@ -25,6 +25,7 @@ var (
 	db       *sql.DB
 	InfoLog  *log.Logger
 	ErrorLog *log.Logger
+	DebugLog *log.Logger
 
 	// Identity
 	ServerUUID  string

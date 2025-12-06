@@ -28,10 +28,27 @@ func setupLogging() {
 	if _, err := os.Stat(logDir); os.IsNotExist(err) {
 		os.Mkdir(logDir, 0755)
 	}
+
+	// standard logs
 	fInfo, _ := os.OpenFile(filepath.Join(logDir, "server.log"), os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
 	fErr, _ := os.OpenFile(filepath.Join(logDir, "error.log"), os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+
 	InfoLog = log.New(io.MultiWriter(os.Stdout, fInfo), "INFO: ", log.Ldate|log.Ltime|log.Lshortfile)
 	ErrorLog = log.New(io.MultiWriter(os.Stderr, fErr), "ERROR: ", log.Ldate|log.Ltime|log.Lshortfile)
+
+	// --- DEBUG LOGGER SETUP ---
+	fDebug, _ := os.OpenFile(filepath.Join(logDir, "debug.log"), os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+
+	// Default to discard (silent)
+	var debugOut io.Writer = io.Discard
+
+	// Enable if Env Var is set
+	if os.Getenv("OWNWORLD_DEBUG") == "true" {
+		debugOut = io.MultiWriter(os.Stdout, fDebug)
+		InfoLog.Println("🔧 DEBUG MODE ENABLED")
+	}
+
+	DebugLog = log.New(debugOut, "DEBUG: ", log.Ldate|log.Ltime|log.Lshortfile)
 }
 
 func compressLZ4(src []byte) []byte {
