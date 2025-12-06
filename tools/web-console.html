@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>OwnWorld Commander v2</title>
+    <title>OwnWorld Commander v3 (Faction Era)</title>
     <style>
         :root { --bg:#050510; --panel:#151520; --accent:#00d2ff; --warn:#ffae00; --danger:#ff3333; --success:#00ff9d; --text:#ddd; }
         body { background:var(--bg); color:var(--text); font-family:monospace; margin:0; padding:20px; }
@@ -33,6 +33,9 @@
         .auth-tabs { display:flex; margin-bottom:20px; border-bottom:1px solid #333; }
         .auth-tab-btn { flex:1; padding:10px; cursor:pointer; background:none; border:none; color:#666; font-weight:bold; }
         .auth-tab-btn.active { color:var(--accent); border-bottom:2px solid var(--accent); }
+        
+        .fleet-card { border: 1px solid #444; padding: 10px; margin-bottom: 5px; background: #1a1a25; }
+        .module-tag { display: inline-block; background: #333; padding: 2px 5px; font-size: 0.8em; margin-right: 3px; border-radius: 3px; }
     </style>
 </head>
 <body>
@@ -42,10 +45,8 @@
     <div class="auth-box">
         <h2 style="color:var(--accent); margin-top:0;">OWNWORLD UPLINK</h2>
         
-        <!-- Server Config -->
         <input id="srv-url" value="http://localhost:8080" placeholder="Server URL" style="margin-bottom:20px;">
 
-        <!-- Auth Tabs -->
         <div class="auth-tabs">
             <button id="tab-login" class="auth-tab-btn active" onclick="switchAuth('login')" style="border:none;">LOGIN</button>
             <button id="tab-register" class="auth-tab-btn" onclick="switchAuth('register')" style="border:none;">REGISTER</button>
@@ -74,14 +75,14 @@
 
     <div class="tab-bar">
         <button class="tab active" onclick="setTab('colonies')">COLONIES</button>
-        <button class="tab" onclick="setTab('fleets')">FLEETS</button>
-        <button class="tab" onclick="setTab('intel')">INTEL</button>
+        <button class="tab" onclick="setTab('fleets')">FLEETS (MODULAR)</button>
+        <button class="tab" onclick="setTab('construction')">SHIPYARD</button>
+        <button class="tab" onclick="setTab('scan')">SCANNER</button>
     </div>
 
     <div class="grid">
         <!-- Main View -->
         <div id="main-view">
-            <!-- Dynamic Content -->
             <div style="color:#666; text-align:center; padding:50px;">Waiting for Uplink...</div>
         </div>
 
@@ -118,7 +119,10 @@
     let AUTH_MODE = 'login';
     let ACTIVE_TAB = 'colonies';
 
-    // --- Init ---
+    // Shipyard State
+    let SELECTED_HULL = 'Fighter';
+    let SELECTED_MODULES = [];
+
     window.onload = function() {
         const saved = localStorage.getItem("ownworld_url");
         if(saved) document.getElementById('srv-url').value = saved;
@@ -132,7 +136,6 @@
         document.getElementById('auth-msg').innerText = "";
     }
 
-    // --- Auth Logic ---
     async function performAuth() {
         const url = document.getElementById('srv-url').value.replace(/\/$/, "");
         const u = document.getElementById('login-user').value;
@@ -153,7 +156,7 @@
                 const data = await res.json();
                 USER_ID = data.user_uuid;
                 USER_NAME = u;
-                SESSION_TOKEN = data.session_token; // Store token
+                SESSION_TOKEN = data.session_token; 
                 startSession();
             } else {
                 const txt = await res.text();
@@ -167,7 +170,6 @@
     function startSession() {
         document.getElementById('auth-overlay').style.display = 'none';
         document.getElementById('app-ui').style.display = 'block';
-        // FIX: XSS Protection (innerText)
         document.getElementById('display-user').innerText = USER_NAME;
         document.getElementById('display-id').innerText = `ID: ${USER_ID.substring(0,8)}...`;
         refreshState();
@@ -180,17 +182,14 @@
         el.innerText = msg;
     }
 
-    // --- State & Rendering ---
     async function refreshState() {
         if(!USER_ID) return;
         try {
-            // Status
             const sRes = await fetch(`${API_URL}/status`);
             const sData = await sRes.json();
             document.getElementById('srv-tick').innerText = sData.tick;
             document.getElementById('srv-leader').innerText = sData.leader ? sData.leader.substring(0,8) : "???";
 
-            // User State with Auth Headers
             const res = await fetch(`${API_URL}/state`, {
                 headers: {
                     'X-User-UUID': USER_ID,
@@ -206,13 +205,7 @@
 
     function escapeHTML(str) {
         return str.replace(/[&<>'"]/g, 
-            tag => ({
-                '&': '&amp;',
-                '<': '&lt;',
-                '>': '&gt;',
-                "'": '&#39;',
-                '"': '&quot;'
-            }[tag]));
+            tag => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'}[tag]));
     }
 
     function renderMain() {
@@ -224,7 +217,6 @@
                 v.innerHTML = "<div class='panel'>No Colonies Found.</div>";
                 return;
             }
-            // FIX: XSS Protection (Escape Name)
             v.innerHTML = STATE.MyColonies.map(c => {
                 const pop = c.pop_laborers + (c.pop_specialists||0);
                 return `
@@ -244,7 +236,84 @@
                     </div>
                 </div>`;
             }).join('');
+        } else if (ACTIVE_TAB === 'fleets') {
+             if (!STATE.MyFleets || STATE.MyFleets.length === 0) {
+                v.innerHTML = "<div class='panel'>No Fleets. Build them in Shipyard.</div>";
+                return;
+            }
+            v.innerHTML = STATE.MyFleets.map(f => `
+                <div class="fleet-card">
+                    <div style="color:var(--accent); font-weight:bold;">${f.hull_class ? f.hull_class.toUpperCase() : 'UNKNOWN'} - ID: ${f.id}</div>
+                    <div style="color:#888; font-size:0.9em; margin:5px 0;">Status: ${f.status} | System: ${f.dest_system || f.origin_system}</div>
+                    <div>
+                        ${f.modules ? f.modules.map(m => `<span class="module-tag">${m}</span>`).join('') : ''}
+                    </div>
+                    <div style="margin-top:10px;">
+                        <button onclick="launchFleet(${f.id})">LAUNCH</button>
+                    </div>
+                </div>
+            `).join('');
+        } else if (ACTIVE_TAB === 'construction') {
+            v.innerHTML = `
+                <div class="panel">
+                    <h3>SHIP DESIGNER</h3>
+                    <label>Hull Class:</label>
+                    <select id="hull-select" onchange="SELECTED_HULL=this.value; SELECTED_MODULES=[]; renderMain()">
+                        <option value="Fighter" ${SELECTED_HULL==='Fighter'?'selected':''}>Fighter (1 Eng, 4 Wpn)</option>
+                        <option value="SpeedyFighter" ${SELECTED_HULL==='SpeedyFighter'?'selected':''}>Speedy Fighter (2 Eng, 2 Wpn)</option>
+                        <option value="Bomber" ${SELECTED_HULL==='Bomber'?'selected':''}>Bomber (1 Eng, 1 Spec[Bomb])</option>
+                        <option value="Frigate" ${SELECTED_HULL==='Frigate'?'selected':''}>Frigate (4 Eng)</option>
+                        <option value="Colonizer" ${SELECTED_HULL==='Colonizer'?'selected':''}>Colonizer (2 Eng, 1 Spec[Ark])</option>
+                    </select>
+                    
+                    <div style="margin-top:10px;">
+                        <button onclick="addMod('warp_drive')">+ Warp Drive</button>
+                        <button onclick="addMod('laser')">+ Laser</button>
+                        <button onclick="addMod('booster')">+ Booster</button>
+                        <button onclick="addMod('colony_kit')">+ Colony Kit</button>
+                        <button onclick="addMod('bomb_bay')">+ Bomb Bay</button>
+                        <button onclick="SELECTED_MODULES=[]; renderMain()" style="color:var(--danger); border-color:var(--danger)">CLEAR</button>
+                    </div>
+                    
+                    <div style="margin:15px 0; border:1px dashed #555; padding:10px;">
+                        <strong>Current Configuration:</strong>
+                        <div>${SELECTED_MODULES.join(', ') || 'Empty'}</div>
+                    </div>
+                    
+                    <button style="width:100%; background:var(--success); color:black;" onclick="constructShip()">CONSTRUCT SHIP</button>
+                </div>
+            `;
+        } else if (ACTIVE_TAB === 'scan') {
+            v.innerHTML = `
+                <div class="panel">
+                    <h3>SECTOR SCANNER</h3>
+                    <p>Enter coordinates to probe the Universal Hash Field.</p>
+                    <div style="display:flex; gap:10px; margin-bottom:10px;">
+                        <input id="scan-x" type="number" placeholder="X">
+                        <input id="scan-y" type="number" placeholder="Y">
+                        <input id="scan-z" type="number" placeholder="Z">
+                    </div>
+                    <button onclick="scanSector()" style="width:100%; border-color:var(--accent); color:var(--accent);">SCAN SECTOR</button>
+                    <div id="scan-results" style="margin-top:20px; font-family:monospace;"></div>
+                </div>
+            `;
         }
+    }
+
+    function addMod(m) {
+        SELECTED_MODULES.push(m);
+        renderMain();
+    }
+
+    async function constructShip() {
+        if(!STATE || !STATE.MyColonies[0]) return log("No Colony to build at.");
+        
+        apiCall('construct', {
+            colony_id: STATE.MyColonies[0].id,
+            hull_class: SELECTED_HULL,
+            modules: SELECTED_MODULES,
+            amount: 1
+        }, "Ship Construction Started");
     }
 
     function renderResBox(label, val) {
@@ -257,33 +326,66 @@
         renderMain();
     }
 
-    // --- Actions ---
     async function quickBuild(struct) {
         if(!STATE || !STATE.MyColonies[0]) return log("No colony selected.");
         const colId = STATE.MyColonies[0].id;
         const amt = parseInt(document.getElementById('action-amt').value) || 1;
-        apiCall('build', {colony_id: colId, structure: struct, amount: amt, user_id: USER_ID}, "Construction Started");
+        apiCall('build', {colony_id: colId, structure: struct, amount: amt}, "Construction Started");
     }
 
     async function quickBurn(item) {
         if(!STATE || !STATE.MyColonies[0]) return;
         const colId = STATE.MyColonies[0].id;
         const amt = parseInt(document.getElementById('action-amt').value) || 100;
-        // User ID is usually an integer in DB but we used UUID string in auth.
-        // For handleBankBurn which expects int user_id, we need to resolve it.
-        // However, the current handleBankBurn takes user_id which matches the DB 'id'.
-        // The API actually needs to be aligned.
-        // Assuming user_id refers to the integer ID from DB, but register returned UUID.
-        // We'll rely on the server handling auth via token anyway.
         apiCall('bank/burn', {colony_id: colId, item: item, amount: amt, user_id: 0}, "Resources Sold");
+    }
+    
+    async function launchFleet(id) {
+        const dest = prompt("Enter Target System ID (e.g. sys-100-50-20):");
+        if(dest) {
+            apiCall('fleet/launch', {fleet_id: id, target_system: dest}, "Launch Sequence Initiated");
+        }
+    }
+
+    async function scanSector() {
+        const x = parseInt(document.getElementById('scan-x').value);
+        const y = parseInt(document.getElementById('scan-y').value);
+        const z = parseInt(document.getElementById('scan-z').value);
+        
+        if (isNaN(x) || isNaN(y) || isNaN(z)) return log("Invalid Coords");
+
+        try {
+            const res = await fetch(`${API_URL}/scan`, {
+                method: 'POST', 
+                body: JSON.stringify({x: x, y: y, z: z}),
+                headers: {
+                    'X-User-UUID': USER_ID,
+                    'X-Session-Token': SESSION_TOKEN
+                }
+            });
+            const data = await res.json();
+            const el = document.getElementById('scan-results');
+            
+            if (data.has_system) {
+                el.innerHTML = `
+                    <div style="color:var(--success)">SIGNAL DETECTED!</div>
+                    <div>Type: ${data.system_type}</div>
+                    <div>Resources:</div>
+                    <ul style="font-size:0.9em; color:#ccc;">
+                        ${Object.entries(data.resources).map(([k,v]) => `<li>${k}: ${v.toFixed(2)}</li>`).join('')}
+                    </ul>
+                    <div style="color:var(--warn)">Hazards: ${(data.hazards * 100).toFixed(1)}%</div>
+                `;
+            } else {
+                el.innerHTML = "<div style='color:#666'>Void sector. No gravity well.</div>";
+            }
+        } catch(e) {
+            log("Scan Failed");
+        }
     }
 
     async function apiCall(endpoint, payload, successMsg) {
         try {
-            // Inject Auth
-            // Note: The POST handlers currently expect payload body parameters.
-            // Some checks might still be missing in handlers if they rely on body 'user_id' vs token.
-            // But we fixed the critical vulnerabilities.
             const res = await fetch(`${API_URL}/${endpoint}`, {
                 method: 'POST', 
                 body: JSON.stringify(payload),

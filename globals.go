@@ -29,8 +29,6 @@ var (
 	ServerUUID  string
 	ServerLoc   []int // [x, y, z]
 	GenesisHash string
-	
-	// FIX F: Bootstrapping - Allow main.go to inject the correct GenesisHash before DB init
 	TargetGenesisHash string 
 
 	PrivateKey  ed25519.PrivateKey
@@ -72,30 +70,23 @@ var (
 	ipLimiters = make(map[string]*rate.Limiter)
 	ipLock     sync.Mutex
 
-	// FIX J: Replay Attack Protection (Double Buffering)
-	// We keep two buffers: Current Tick and Previous Tick.
-	// This covers the race condition where a transaction arrives just after a cache clear 
-	// but is still valid within the handlers logic window.
+	// Replay Protection
 	SeenCurrent  = make(map[string]bool)
 	SeenPrevious = make(map[string]bool)
 	SeenTxLock   sync.Mutex
 )
 
-// FIX J: Prune Cache Helper (Double Buffer Rotation)
-// Called by simulation.go -> tickWorld() to rotate memory every tick
 func pruneTransactionCache() {
 	SeenTxLock.Lock()
 	defer SeenTxLock.Unlock()
-	// Rotate: Current becomes Previous, discarding old Previous.
 	SeenPrevious = SeenCurrent
 	SeenCurrent = make(map[string]bool)
 }
 
 // Game Constants
 var UnitCosts = map[string]map[string]int{
+	// Legacy Units kept for reference, but construction now uses HullSpecs
 	"ark_ship": {"iron": 5000, "food": 5000, "fuel": 500, "pop_laborers": 100},
-	"fighter":  {"iron": 500, "fuel": 50, "pop_laborers": 1},
-	"frigate":  {"iron": 2000, "carbon": 500, "gold": 50, "pop_specialists": 5},
 }
 
 var BuildingCosts = map[string]map[string]int{
@@ -106,4 +97,24 @@ var BuildingCosts = map[string]map[string]int{
 	"urban_housing":   {"iron": 50},
 	"pilot_academy":   {"iron": 1000, "gold": 100},
 	"financial_center": {"iron": 5000, "gold": 1000},
+}
+
+// HARD-CODED CLASSES (The "Physics" of the Hull)
+var HullRegistry = map[string]ShipHull{
+    "Fighter":        {Class: "Fighter", EngineSlots: 1, WeaponSlots: 4, SpecialSlots: 0},
+    "SpeedyFighter":  {Class: "SpeedyFighter", EngineSlots: 2, WeaponSlots: 2, SpecialSlots: 0},
+    "Bomber":         {Class: "Bomber", EngineSlots: 1, WeaponSlots: 0, SpecialSlots: 1}, // Special = BombBay
+    "Frigate":        {Class: "Frigate", EngineSlots: 4, WeaponSlots: 0, SpecialSlots: 0}, // Pure Mover
+    "Colonizer":      {Class: "Colonizer", EngineSlots: 2, WeaponSlots: 0, SpecialSlots: 1}, // Special = Ark
+}
+
+// New: Module Costs
+var ModuleCosts = map[string]int{
+    "booster":       100,
+    "propeller":     50,
+    "warp_drive":    1000,
+    "laser":         200,
+    "railgun":       300,
+    "bomb_bay":      500,
+    "colony_kit":    5000,
 }

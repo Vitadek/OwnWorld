@@ -22,7 +22,6 @@ func initDB() {
 
 	db.Exec("PRAGMA journal_mode=WAL;")
 
-	// FIX IDOR: Added session_token to users table
 	schema := `
 	CREATE TABLE IF NOT EXISTS system_meta (key TEXT PRIMARY KEY, value TEXT);
 
@@ -35,11 +34,12 @@ func initDB() {
 		is_local BOOLEAN DEFAULT 1,
 		ed25519_pubkey TEXT,
 		ed25519_priv_enc TEXT,
-		session_token TEXT  -- Stores active session token
+		session_token TEXT
 	);
 
 	CREATE TABLE IF NOT EXISTS solar_systems (
 		id TEXT PRIMARY KEY,
+		type TEXT DEFAULT 'G2V', -- Now stores discovered types (void, gaia_world, etc.)
 		x INTEGER, y INTEGER, z INTEGER,
 		star_type TEXT, owner_uuid TEXT, tax_rate REAL DEFAULT 0.0,
 		is_federated BOOLEAN DEFAULT 0
@@ -64,6 +64,7 @@ func initDB() {
 		buildings_json TEXT
 	);
 
+	-- UPDATED: Modular Ships
 	CREATE TABLE IF NOT EXISTS fleets (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		owner_uuid TEXT,
@@ -72,11 +73,18 @@ func initDB() {
 		dest_system TEXT,
 		departure_tick INTEGER,
 		arrival_tick INTEGER,
-		ark_ship INTEGER DEFAULT 0,
+		fuel INTEGER DEFAULT 0,
+		
+		-- New Modular Fields
+		hull_class TEXT,      -- "fighter", "bomber", "colonizer"
+		modules_json TEXT,    -- JSON Array: ["warp_drive", "laser"]
+		
+		-- Legacy fields removed/ignored in new logic, kept for migration safety if needed
+		ark_ship INTEGER DEFAULT 0, 
 		fighters INTEGER DEFAULT 0,
 		frigates INTEGER DEFAULT 0,
 		haulers INTEGER DEFAULT 0,
-		fuel INTEGER DEFAULT 0,
+		
 		start_coords TEXT, dest_coords TEXT
 	);
 
@@ -85,6 +93,16 @@ func initDB() {
 	);
 	CREATE TABLE IF NOT EXISTS daily_snapshots (
 		day_id INTEGER PRIMARY KEY, state_blob BLOB, final_hash TEXT
+	);
+
+	-- NEW: Grievances (The Trust Ledger)
+	CREATE TABLE IF NOT EXISTS grievances (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		offender_uuid TEXT,
+		victim_uuid TEXT,
+		damage_amount INTEGER,
+		tick INTEGER,
+		signature TEXT
 	);
 	`
 	if _, err := db.Exec(schema); err != nil { panic(err) }
@@ -100,14 +118,10 @@ func initIdentity() {
 		InfoLog.Println("🚀 FIRST BOOT: Generating Identity...")
 		pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 
-		// FIX F: Bootstrap Genesis
-		// If TargetGenesisHash was fetched from a seed (main.go), use it.
-		// Otherwise, create a new random one (Genesis Mode).
 		if TargetGenesisHash != "" {
 			GenesisHash = TargetGenesisHash
 			InfoLog.Printf("🔗 Binding to Federation Genesis: %s", GenesisHash)
 		} else {
-			// Random Genesis for isolated/seed nodes
 			rndBytes := make([]byte, 8); rand.Read(rndBytes)
 			genesisData := fmt.Sprintf("GENESIS-%d-%x", time.Now().UnixNano(), rndBytes)
 			hash := blake3.Sum256([]byte(genesisData))
@@ -115,7 +129,6 @@ func initIdentity() {
 			InfoLog.Printf("✨ Created NEW Genesis: %s", GenesisHash)
 		}
 		
-		// Use public key hash as UUID
 		uuid = hashBLAKE3(pub)
 
 		tx, _ := db.Begin()
