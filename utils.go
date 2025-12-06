@@ -102,7 +102,11 @@ func middlewareSecurity(next http.Handler) http.Handler {
 		}
 
 		if r.Method == "OPTIONS" {
-			next.ServeHTTP(w, r)
+            // FIX CORS: Must include headers here for preflight check
+            w.Header().Set("Access-Control-Allow-Origin", "*")
+            w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+            w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, X-User-ID, X-User-UUID, X-Server-UUID, X-Session-Token")
+			w.WriteHeader(http.StatusOK)
 			return
 		}
 
@@ -120,8 +124,10 @@ func middlewareCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, X-User-ID, X-Server-UUID")
-		if r.Method == "OPTIONS" {
+        // FIX CORS: Added X-Session-Token and X-User-UUID explicitly
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, X-User-ID, X-User-UUID, X-Server-UUID, X-Session-Token")
+		
+        if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusOK)
 			return
 		}

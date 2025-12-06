@@ -15,8 +15,9 @@ import (
 // --- Configuration ---
 const (
 	DBPath          = "./data/ownworld.db"
-	MinTickDuration = 4000
-	MaxTickDuration = 6000
+    // Slowed down ticks to 1 minute
+	MinTickDuration = 60000 
+	MaxTickDuration = 65000 
 )
 
 var (
@@ -45,7 +46,8 @@ var (
 	peerLock      sync.RWMutex
 	CurrentTick   int64 = 0
 	PreviousHash  string = "GENESIS"
-	TickDuration  int64 = 5000
+    // Default tick duration
+	TickDuration  int64 = 60000 
 	MyRank        int   = 0
 	TotalPeers    int   = 1
 	PhaseOffset   time.Duration = 0
@@ -97,6 +99,9 @@ var BuildingCosts = map[string]map[string]int{
 	"urban_housing":   {"iron": 50},
 	"pilot_academy":   {"iron": 1000, "gold": 100},
 	"financial_center": {"iron": 5000, "gold": 1000},
+    // New Buildings for Industry
+    "steel_mill":      {"iron": 500, "carbon": 500},
+    "winery":          {"iron": 100, "gold": 50},
 }
 
 // HARD-CODED CLASSES (The "Physics" of the Hull)

@@ -37,7 +37,6 @@
 </head>
 <body>
 
-<!-- AUTH OVERLAY -->
 <div id="auth-overlay">
     <div class="auth-box">
         <h2 style="color:var(--accent); margin-top:0;">OWNWORLD UPLINK</h2>
@@ -53,7 +52,6 @@
     </div>
 </div>
 
-<!-- MAIN UI -->
 <div id="app-ui" style="display:none;">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
         <div>
@@ -64,7 +62,6 @@
         </div>
     </div>
 
-    <!-- Active Colony Context Selector -->
     <div class="context-bar">
         <span>ACTIVE PROVINCE:</span>
         <select id="colony-selector" onchange="switchColonyContext()" style="width:auto; margin:0; background:#222;">
@@ -206,14 +203,14 @@
         const sel = document.getElementById('colony-selector');
         const prev = ACTIVE_COLONY_ID;
         
-        // Preserve selection or default to first
-        if (!ACTIVE_COLONY_ID && STATE.MyColonies && STATE.MyColonies.length > 0) {
-            ACTIVE_COLONY_ID = STATE.MyColonies[0].id;
+        // Use "colonies" (lowercase) instead of "MyColonies"
+        if (!ACTIVE_COLONY_ID && STATE.colonies && STATE.colonies.length > 0) {
+            ACTIVE_COLONY_ID = STATE.colonies[0].id;
         }
 
         // Rebuild options if count changed (simple check)
-        if (sel.options.length !== STATE.MyColonies.length) {
-            sel.innerHTML = STATE.MyColonies.map(c => 
+        if (STATE.colonies && sel.options.length !== STATE.colonies.length) {
+            sel.innerHTML = STATE.colonies.map(c => 
                 `<option value="${c.id}">${escapeHTML(c.name)} (${c.system_id})</option>`
             ).join('');
             sel.value = ACTIVE_COLONY_ID;
@@ -238,11 +235,12 @@
         if (!STATE) return;
 
         if (ACTIVE_TAB === 'colonies') {
-            if (!STATE.MyColonies || STATE.MyColonies.length === 0) {
+            // Use "colonies" (lowercase)
+            if (!STATE.colonies || STATE.colonies.length === 0) {
                 v.innerHTML = "<div class='panel'>No Colonies Found.</div>";
                 return;
             }
-            v.innerHTML = STATE.MyColonies.map(c => {
+            v.innerHTML = STATE.colonies.map(c => {
                 const isParent = c.parent_id === 0;
                 return `
                 <div class="panel" style="border-left: 4px solid ${isParent ? 'var(--warn)' : 'var(--accent)'}">
@@ -262,11 +260,12 @@
                 </div>`;
             }).join('');
         } else if (ACTIVE_TAB === 'fleets') {
-             if (!STATE.MyFleets || STATE.MyFleets.length === 0) {
+             // Use "fleets" (lowercase) instead of "MyFleets"
+             if (!STATE.fleets || STATE.fleets.length === 0) {
                 v.innerHTML = "<div class='panel'>No Fleets. Build them in Shipyard.</div>";
                 return;
             }
-            v.innerHTML = STATE.MyFleets.map(f => `
+            v.innerHTML = STATE.fleets.map(f => `
                 <div class="fleet-card">
                     <div style="color:var(--accent); font-weight:bold;">${f.hull_class ? f.hull_class.toUpperCase() : 'UNKNOWN'} - ID: ${f.id}</div>
                     <div style="color:#888; font-size:0.9em; margin:5px 0;">Status: ${f.status} | Loc: ${f.dest_system || f.origin_system}</div>

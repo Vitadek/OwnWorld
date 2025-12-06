@@ -670,3 +670,33 @@ INFO: 2025/12/03 08:10:51 main.go:138: Mode: promiscuous | Control: true
 INFO: 2025/12/03 08:10:51 main.go:28: No SEED_NODES found. Starting as Lonely/Genesis Node.
 INFO: 2025/12/03 08:10:51 main.go:180: Node 0fd4b3b55c37761aa4200a8dd87b2d610fc567f8b0408287154b38cd97b9ec7c Listening on :8080
 INFO: 2025/12/03 08:10:51 simulation.go:128: Starting Galaxy Engine...
+INFO: 2025/12/05 19:01:44 db.go:129: 🚀 FIRST BOOT: Generating Identity...
+INFO: 2025/12/05 19:01:44 db.go:140: ✨ Created NEW Genesis: 1bdde1b289526e54027254b207955463d831026b149f43b38eeb46b8b14788d2
+INFO: 2025/12/05 19:01:44 main.go:148: OWNWORLD BOOT SEQUENCE (V3.1)
+INFO: 2025/12/05 19:01:44 main.go:149: Mode: promiscuous | Control: true
+INFO: 2025/12/05 19:01:44 main.go:67: No SEED_NODES found. Starting as Lonely/Genesis Node.
+INFO: 2025/12/05 19:01:44 main.go:194: Node 96fe3528943d0fe2a934ea74fa6f37e8233e3e932924c1d2d08b36a02923e167 Listening on :8080
+INFO: 2025/12/05 19:02:01 main.go:148: OWNWORLD BOOT SEQUENCE (V3.1)
+INFO: 2025/12/05 19:02:01 main.go:149: Mode: promiscuous | Control: true
+INFO: 2025/12/05 19:02:01 main.go:194: Node 96fe3528943d0fe2a934ea74fa6f37e8233e3e932924c1d2d08b36a02923e167 Listening on :8080
+INFO: 2025/12/05 19:02:01 main.go:67: No SEED_NODES found. Starting as Lonely/Genesis Node.
+INFO: 2025/12/05 19:05:39 main.go:148: OWNWORLD BOOT SEQUENCE (V3.1)
+INFO: 2025/12/05 19:05:39 main.go:149: Mode: promiscuous | Control: true
+INFO: 2025/12/05 19:05:39 main.go:194: Node 96fe3528943d0fe2a934ea74fa6f37e8233e3e932924c1d2d08b36a02923e167 Listening on :8080
+INFO: 2025/12/05 19:05:39 main.go:67: No SEED_NODES found. Starting as Lonely/Genesis Node.
+INFO: 2025/12/05 19:42:17 db.go:129: 🚀 FIRST BOOT: Generating Identity...
+INFO: 2025/12/05 19:42:17 db.go:140: ✨ Created NEW Genesis: 79d6c38f451264b03d5c56e3c38683057542c0cfd7bb2e4f52f89ca10f181456
+INFO: 2025/12/05 19:42:17 main.go:148: OWNWORLD BOOT SEQUENCE (V3.1)
+INFO: 2025/12/05 19:42:17 main.go:149: Mode: promiscuous | Control: true
+INFO: 2025/12/05 19:42:17 main.go:67: No SEED_NODES found. Starting as Lonely/Genesis Node.
+INFO: 2025/12/05 19:42:17 main.go:194: Node 5d968dba5068142ddd9c1f18a0f547d6e38ed0ba7320b14c82151fd9398ab8b7 Listening on :8080
+INFO: 2025/12/05 19:44:45 main.go:148: OWNWORLD BOOT SEQUENCE (V3.1)
+INFO: 2025/12/05 19:44:45 main.go:149: Mode: promiscuous | Control: true
+INFO: 2025/12/05 19:44:45 main.go:194: Node 5d968dba5068142ddd9c1f18a0f547d6e38ed0ba7320b14c82151fd9398ab8b7 Listening on :8080
+INFO: 2025/12/05 19:44:45 main.go:67: No SEED_NODES found. Starting as Lonely/Genesis Node.
+INFO: 2025/12/05 19:56:49 db.go:129: 🚀 FIRST BOOT: Generating Identity...
+INFO: 2025/12/05 19:56:49 db.go:140: ✨ Created NEW Genesis: a13176ef19edab34464f1b57242e46bbb461d52013cc7e9a83128f3a4fb4eb92
+INFO: 2025/12/05 19:56:49 main.go:148: OWNWORLD BOOT SEQUENCE (V3.1)
+INFO: 2025/12/05 19:56:49 main.go:149: Mode: promiscuous | Control: true
+INFO: 2025/12/05 19:56:49 main.go:67: No SEED_NODES found. Starting as Lonely/Genesis Node.
+INFO: 2025/12/05 19:56:49 main.go:194: Node 8c72eee533337e5290b383696dc884517004a9e0fdfdd113661d814f0502b1d0 Listening on :8080

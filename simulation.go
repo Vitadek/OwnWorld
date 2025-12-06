@@ -172,7 +172,7 @@ func processIndustry(c *Colony) {
 		if c.Iron >= inputIron && c.Carbon >= inputCarbon {
 			c.Iron -= inputIron
 			c.Carbon -= inputCarbon
-			c.Steel = safeAdd(c.Steel, outputSteel) // Use safeAdd
+			c.Steel = safeAdd(c.Steel, outputSteel) 
 		}
 	}
 
@@ -184,7 +184,7 @@ func processIndustry(c *Colony) {
 
 		if c.Vegetation >= inputVeg {
 			c.Vegetation -= inputVeg
-			c.Wine = safeAdd(c.Wine, outputWine) // Use safeAdd
+			c.Wine = safeAdd(c.Wine, outputWine) 
 		}
 	}
 }
@@ -485,7 +485,8 @@ func tickWorld() {
 }
 
 func runGameLoop() {
-	ticker := time.NewTicker(5 * time.Second)
+    // FIX: Slowed tick down to 60s (1 Minute)
+	ticker := time.NewTicker(60 * time.Second)
 	for {
 		<-ticker.C
 
