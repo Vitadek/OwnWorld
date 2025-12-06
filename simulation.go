@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	mrand "math/rand" 
+	mrand "math/rand"
 	"sync/atomic"
 	"time"
 )
@@ -342,7 +342,7 @@ func tickWorld() {
 
 	// 3. Process Colonies
 	rows, err := db.Query(`SELECT id, buildings_json, policies_json, pop_laborers, pop_specialists, pop_elites, 
-	                       food, water, carbon, gold, fuel, steel, wine, vegetation, stability_current, stability_target 
+	                       food, water, carbon, gold, fuel, steel, wine, vegetation, stability_current, stability_target, iron 
 	                       FROM colonies`)
 	if err != nil {
 		return
@@ -350,10 +350,10 @@ func tickWorld() {
 	defer rows.Close()
 
 	type ColUpdate struct {
-		ID                                                int
-		Food, Water, Carbon, Gold, Fuel, Steel, Wine, Veg int
-		PopLab, PopSpec, PopElite                         int
-		Stability, Target                                 float64
+		ID                                                      int
+		Food, Water, Iron, Carbon, Gold, Fuel, Steel, Wine, Veg int
+		PopLab, PopSpec, PopElite                               int
+		Stability, Target                                       float64
 	}
 	var updates []ColUpdate
 
@@ -362,11 +362,10 @@ func tickWorld() {
 		var bJson, pJson string
 		rows.Scan(&c.ID, &bJson, &pJson, &c.PopLaborers, &c.PopSpecialists, &c.PopElites,
 			&c.Food, &c.Water, &c.Carbon, &c.Gold, &c.Fuel, &c.Steel, &c.Wine, &c.Vegetation,
-			&c.StabilityCurrent, &c.StabilityTarget)
+			&c.StabilityCurrent, &c.StabilityTarget, &c.Iron)
 		json.Unmarshal([]byte(bJson), &c.Buildings)
 		
 		// --- NEW: POLICY LOGIC ---
-		// 1. Parse Policies
 		c.Policies = make(map[string]bool)
 		if pJson != "" {
 			json.Unmarshal([]byte(pJson), &c.Policies)
@@ -435,9 +434,11 @@ func tickWorld() {
 		}
 
 		updates = append(updates, ColUpdate{
-			ID: c.ID, Food: c.Food, Water: c.Water, Carbon: c.Carbon,
-			PopLab: c.PopLaborers, PopSpec: c.PopSpecialists, PopElite: c.PopElites,
+			ID: c.ID,
+			Food: c.Food, Water: c.Water, Iron: c.Iron, Carbon: c.Carbon,
+			Gold: c.Gold, Fuel: c.Fuel,
 			Steel: c.Steel, Wine: c.Wine, Veg: c.Vegetation,
+			PopLab: c.PopLaborers, PopSpec: c.PopSpecialists, PopElite: c.PopElites,
 			Stability: c.StabilityCurrent, Target: c.StabilityTarget,
 		})
 	}
@@ -445,13 +446,16 @@ func tickWorld() {
 	if len(updates) > 0 {
 		tx, _ := db.Begin()
 		stmt, _ := tx.Prepare(`UPDATE colonies SET 
-			food=?, water=?, carbon=?, steel=?, wine=?, vegetation=?,
+			food=?, water=?, iron=?, carbon=?, gold=?, fuel=?, 
+			steel=?, wine=?, vegetation=?,
 			pop_laborers=?, pop_specialists=?, pop_elites=?, 
 			stability_current=?, stability_target=? 
 			WHERE id=?`)
 		for _, u := range updates {
-			stmt.Exec(u.Food, u.Water, u.Carbon, u.Steel, u.Wine, u.Veg,
-				u.PopLab, u.PopSpec, u.PopElite, u.Stability, u.Target, u.ID)
+			stmt.Exec(u.Food, u.Water, u.Iron, u.Carbon, u.Gold, u.Fuel,
+				u.Steel, u.Wine, u.Veg,
+				u.PopLab, u.PopSpec, u.PopElite,
+				u.Stability, u.Target, u.ID)
 		}
 		stmt.Close()
 		tx.Commit()

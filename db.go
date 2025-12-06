@@ -50,7 +50,7 @@ func initDB() {
 		system_id TEXT,
 		owner_uuid TEXT,
 		name TEXT,
-		parent_colony_id INTEGER DEFAULT 0, -- Track Heritage
+		parent_colony_id INTEGER DEFAULT 0,
 		
 		pop_laborers INTEGER DEFAULT 100,
 		pop_specialists INTEGER DEFAULT 0,
@@ -69,7 +69,7 @@ func initDB() {
 		stability_target REAL DEFAULT 100.0,
 		martial_law BOOLEAN DEFAULT 0,
 		buildings_json TEXT,
-		policies_json TEXT DEFAULT '{}' -- New: Policies
+		policies_json TEXT DEFAULT '{}'
 	);
 
 	CREATE TABLE IF NOT EXISTS fleets (
@@ -163,4 +163,4 @@ func initIdentity() {
 	}
 	ServerUUID = uuid
 	LeaderUUID = ServerUUID
-}
+}	

@@ -46,7 +46,7 @@ type Colony struct {
 	ParentID      int            `json:"parent_id"` 
 	Name          string         `json:"name"`
 	Buildings     map[string]int `json:"buildings"`
-	Policies      map[string]bool `json:"policies"` // New field
+	Policies      map[string]bool `json:"policies"` 
 	
 	PopLaborers   int `json:"pop_laborers"`
 	PopSpecialists int `json:"pop_specialists"`
