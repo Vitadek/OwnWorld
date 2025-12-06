@@ -57,13 +57,20 @@ type Colony struct {
 	Iron       int `json:"iron"`
 	Carbon     int `json:"carbon"`
 	Gold       int `json:"gold"`
-	Uranium    int `json:"uranium"`
-	Platinum   int `json:"platinum"`
-	Diamond    int `json:"diamond"`
-	Vegetation int `json:"vegetation"`
+    Vegetation int `json:"vegetation"`
 	Oxygen     int `json:"oxygen"`
 	Fuel       int `json:"fuel"`
 	
+    // Advanced/Raw
+	Uranium    int `json:"uranium"`
+    UraniumOre int `json:"uranium_ore"`
+	Platinum   int `json:"platinum"`
+    PlatinumOre int `json:"platinum_ore"`
+	Diamond    int `json:"diamond"`
+    DiamondOre int `json:"diamond_ore"`
+    Plutonium  int `json:"plutonium"`
+	
+    // Manufactured
 	Steel      int `json:"steel"`
 	Wine       int `json:"wine"`
 	

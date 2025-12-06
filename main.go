@@ -15,9 +15,10 @@ import (
 )
 
 func initConfig() {
-	Config.CommandControl = true
-	if os.Getenv("OWNWORLD_COMMAND_CONTROL") == "false" {
-		Config.CommandControl = false
+    // Default to FALSE for safety (Requires OWNWORLD_COMMAND_CONTROL=true env var to enable registration)
+	Config.CommandControl = false 
+	if os.Getenv("OWNWORLD_COMMAND_CONTROL") == "true" {
+		Config.CommandControl = true
 	}
 
 	Config.PeeringMode = "promiscuous"
@@ -171,7 +172,14 @@ func main() {
 	mux.HandleFunc("/federation/heartbeat", handleHeartbeat)
 	mux.HandleFunc("/federation/reputation", handleReputationQuery)
 
-	mux.HandleFunc("/api/register", handleRegister)
+    // User endpoints (Should be gated in future if needed, but logic remains same)
+	mux.HandleFunc("/api/register", func(w http.ResponseWriter, r *http.Request) {
+        if !Config.CommandControl {
+            http.Error(w, "Registration Disabled on this Node", 403)
+            return
+        }
+        handleRegister(w, r)
+    })
 	mux.HandleFunc("/api/deploy", handleDeploy)
 	mux.HandleFunc("/api/build", handleBuild)
 	mux.HandleFunc("/api/construct", handleConstruct)

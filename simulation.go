@@ -74,7 +74,11 @@ func GetSectorData(x, y, z int) SectorPotential {
 	res["gold"] = (float64(hashBytes[3]) / 255.0) * 2.4 + 0.1
 	res["vegetation"] = (float64(hashBytes[4]) / 255.0) * 2.4 + 0.1
 	res["water"] = (float64(hashBytes[5]) / 255.0) * 2.4 + 0.1
-	res["fuel"] = (float64(hashBytes[6]) / 255.0) * 2.4 + 0.1
+	
+    // New Raw Materials
+    res["uranium_ore"] = (float64(hashBytes[6]) / 255.0) * 1.5 + 0.05
+    res["platinum_ore"] = (float64(hashBytes[8]) / 255.0) * 1.5 + 0.05
+    res["diamond_ore"] = (float64(hashBytes[9]) / 255.0) * 1.2 + 0.01
 
 	hazards := float64(hashBytes[7]) / 255.0
 
@@ -162,31 +166,45 @@ func resolveDeepSpaceArrival(fleet Fleet) {
 // --- New Mechanics: Refining & Combat ---
 
 func processIndustry(c *Colony) {
-	// 1. Steel Production (Tier 2)
-	if count, ok := c.Buildings["steel_mill"]; ok && count > 0 {
-		efficiency := GetEfficiency(c.ID, "iron")
-		inputIron := 2 * count
-		inputCarbon := 1 * count
-		outputSteel := int(float64(count)*efficiency) + 1
+    // Helper to process standard conversion with time penalty (throughput limit per tick)
+    runRefinery := func(building string, inputName string, inputAmt int, outputName string, outputAmt int, inputStock *int, outputStock *int) {
+        if count, ok := c.Buildings[building]; ok && count > 0 {
+            totalInput := inputAmt * count
+            totalOutput := outputAmt * count
+            
+            // Efficiency bonus based on location
+            efficiency := GetEfficiency(c.ID, inputName)
+            adjustedOutput := int(float64(totalOutput) * efficiency) + 1
 
-		if c.Iron >= inputIron && c.Carbon >= inputCarbon {
-			c.Iron -= inputIron
-			c.Carbon -= inputCarbon
-			c.Steel = safeAdd(c.Steel, outputSteel) 
-		}
-	}
+            if *inputStock >= totalInput {
+                *inputStock -= totalInput
+                *outputStock = safeAdd(*outputStock, adjustedOutput)
+            }
+        }
+    }
 
-	// 2. Wine Production (Tier 3 - Luxury)
-	if count, ok := c.Buildings["winery"]; ok && count > 0 {
-		efficiency := GetEfficiency(c.ID, "vegetation")
-		inputVeg := 5 * count
-		outputWine := int(float64(count)*efficiency) + 1
+	// 1. Steel Production (Iron + Carbon -> Steel)
+    runRefinery("steel_mill", "iron", 2, "steel", 1, &c.Iron, &c.Steel)
 
-		if c.Vegetation >= inputVeg {
-			c.Vegetation -= inputVeg
-			c.Wine = safeAdd(c.Wine, outputWine) 
-		}
-	}
+    // 2. Fuel Synthesis (Carbon -> Fuel)
+    // This adds the "time penalty" because you can only convert X amount per tick per building
+    runRefinery("fuel_synthesizer", "carbon", 5, "fuel", 2, &c.Carbon, &c.Fuel)
+
+	// 3. Wine Production (Luxury)
+    runRefinery("winery", "vegetation", 5, "wine", 1, &c.Vegetation, &c.Wine)
+
+    // 4. Platinum Refining (Ore -> Ingot)
+    runRefinery("platinum_refinery", "platinum_ore", 3, "platinum", 1, &c.PlatinumOre, &c.Platinum)
+
+    // 5. Uranium Enrichment (Ore -> Fuel Grade)
+    runRefinery("uranium_enricher", "uranium_ore", 5, "uranium", 1, &c.UraniumOre, &c.Uranium)
+
+    // 6. Diamond Cutting (Ore -> Gem)
+    runRefinery("diamond_cutter", "diamond_ore", 4, "diamond", 1, &c.DiamondOre, &c.Diamond)
+
+    // 7. Plutonium Breeding (Uranium -> Plutonium)
+    // Very slow/expensive process
+    runRefinery("breeder_reactor", "uranium", 10, "plutonium", 1, &c.Uranium, &c.Plutonium)
 }
 
 func resolveSectorConflict(currentTick int64) {
@@ -360,7 +378,8 @@ func tickWorld() {
 	resolveSectorConflict(current)
 
 	rows, err := db.Query(`SELECT id, buildings_json, policies_json, pop_laborers, pop_specialists, pop_elites, 
-	                       food, water, carbon, gold, fuel, steel, wine, vegetation, stability_current, stability_target, iron 
+	                       food, water, carbon, gold, fuel, steel, wine, vegetation, stability_current, stability_target, iron,
+                           uranium, uranium_ore, platinum, platinum_ore, diamond, diamond_ore, plutonium
 	                       FROM colonies`)
 	if err != nil {
 		return
@@ -370,6 +389,7 @@ func tickWorld() {
 	type ColUpdate struct {
 		ID                                                      int
 		Food, Water, Iron, Carbon, Gold, Fuel, Steel, Wine, Veg int
+        Uranium, UraniumOre, Platinum, PlatinumOre, Diamond, DiamondOre, Plutonium int
 		PopLab, PopSpec, PopElite                               int
 		Stability, Target                                       float64
 	}
@@ -380,7 +400,8 @@ func tickWorld() {
 		var bJson, pJson string
 		rows.Scan(&c.ID, &bJson, &pJson, &c.PopLaborers, &c.PopSpecialists, &c.PopElites,
 			&c.Food, &c.Water, &c.Carbon, &c.Gold, &c.Fuel, &c.Steel, &c.Wine, &c.Vegetation,
-			&c.StabilityCurrent, &c.StabilityTarget, &c.Iron)
+			&c.StabilityCurrent, &c.StabilityTarget, &c.Iron,
+            &c.Uranium, &c.UraniumOre, &c.Platinum, &c.PlatinumOre, &c.Diamond, &c.DiamondOre, &c.Plutonium)
 		json.Unmarshal([]byte(bJson), &c.Buildings)
 		
 		c.Policies = make(map[string]bool)
@@ -388,11 +409,21 @@ func tickWorld() {
 			json.Unmarshal([]byte(pJson), &c.Policies)
 		}
 
+		// Mining (Extraction Logic)
 		foodEff := GetEfficiency(c.ID, "food")
+        uraniumEff := GetEfficiency(c.ID, "uranium_ore")
+        platinumEff := GetEfficiency(c.ID, "platinum_ore")
+        diamondEff := GetEfficiency(c.ID, "diamond_ore")
+        carbonEff := GetEfficiency(c.ID, "carbon")
+        ironEff := GetEfficiency(c.ID, "iron")
 		
-		// Use safeAdd for production (Fix: prevents overflow)
 		c.Food = safeAdd(c.Food, int(float64(c.Buildings["farm"]*5)*foodEff))
 		c.Water = safeAdd(c.Water, int(float64(c.Buildings["well"]*5)*foodEff))
+        c.UraniumOre = safeAdd(c.UraniumOre, int(float64(c.Buildings["uranium_mine"]*2)*uraniumEff))
+        c.PlatinumOre = safeAdd(c.PlatinumOre, int(float64(c.Buildings["platinum_mine"]*2)*platinumEff))
+        c.DiamondOre = safeAdd(c.DiamondOre, int(float64(c.Buildings["diamond_mine"]*2)*diamondEff))
+        c.Carbon = safeAdd(c.Carbon, int(float64(c.Buildings["carbon_extractor"]*10)*carbonEff))
+        c.Iron = safeAdd(c.Iron, int(float64(c.Buildings["iron_mine"]*10)*ironEff))
 
 		processIndustry(&c)
 
@@ -454,6 +485,10 @@ func tickWorld() {
 			Food: c.Food, Water: c.Water, Iron: c.Iron, Carbon: c.Carbon,
 			Gold: c.Gold, Fuel: c.Fuel,
 			Steel: c.Steel, Wine: c.Wine, Veg: c.Vegetation,
+            Uranium: c.Uranium, UraniumOre: c.UraniumOre, 
+            Platinum: c.Platinum, PlatinumOre: c.PlatinumOre, 
+            Diamond: c.Diamond, DiamondOre: c.DiamondOre,
+            Plutonium: c.Plutonium,
 			PopLab: c.PopLaborers, PopSpec: c.PopSpecialists, PopElite: c.PopElites,
 			Stability: c.StabilityCurrent, Target: c.StabilityTarget,
 		})
@@ -464,12 +499,14 @@ func tickWorld() {
 		stmt, _ := tx.Prepare(`UPDATE colonies SET 
 			food=?, water=?, iron=?, carbon=?, gold=?, fuel=?, 
 			steel=?, wine=?, vegetation=?,
+            uranium=?, uranium_ore=?, platinum=?, platinum_ore=?, diamond=?, diamond_ore=?, plutonium=?,
 			pop_laborers=?, pop_specialists=?, pop_elites=?, 
 			stability_current=?, stability_target=? 
 			WHERE id=?`)
 		for _, u := range updates {
 			stmt.Exec(u.Food, u.Water, u.Iron, u.Carbon, u.Gold, u.Fuel,
 				u.Steel, u.Wine, u.Veg,
+                u.Uranium, u.UraniumOre, u.Platinum, u.PlatinumOre, u.Diamond, u.DiamondOre, u.Plutonium,
 				u.PopLab, u.PopSpec, u.PopElite,
 				u.Stability, u.Target, u.ID)
 		}

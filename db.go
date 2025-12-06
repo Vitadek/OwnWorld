@@ -58,7 +58,12 @@ func initDB() {
 		
 		food INTEGER DEFAULT 1000, water INTEGER DEFAULT 1000,
 		iron INTEGER DEFAULT 0, carbon INTEGER DEFAULT 0, gold INTEGER DEFAULT 0,
-		platinum INTEGER DEFAULT 0, uranium INTEGER DEFAULT 0, diamond INTEGER DEFAULT 0,
+		
+        platinum INTEGER DEFAULT 0, platinum_ore INTEGER DEFAULT 0,
+        uranium INTEGER DEFAULT 0, uranium_ore INTEGER DEFAULT 0, 
+        diamond INTEGER DEFAULT 0, diamond_ore INTEGER DEFAULT 0,
+        plutonium INTEGER DEFAULT 0,
+
 		vegetation INTEGER DEFAULT 0, oxygen INTEGER DEFAULT 1000,
 		fuel INTEGER DEFAULT 0,
 		
@@ -112,11 +117,18 @@ func initDB() {
 	`
 	if _, err := db.Exec(schema); err != nil { panic(err) }
 
+    // Migrations for existing saves
 	db.Exec("ALTER TABLE colonies ADD COLUMN parent_colony_id INTEGER DEFAULT 0")
 	db.Exec("ALTER TABLE colonies ADD COLUMN steel INTEGER DEFAULT 0")
 	db.Exec("ALTER TABLE colonies ADD COLUMN wine INTEGER DEFAULT 0")
 	db.Exec("ALTER TABLE colonies ADD COLUMN policies_json TEXT DEFAULT '{}'")
 	db.Exec("ALTER TABLE fleets ADD COLUMN payload_json TEXT")
+
+    // New Materials Migrations
+    db.Exec("ALTER TABLE colonies ADD COLUMN platinum_ore INTEGER DEFAULT 0")
+    db.Exec("ALTER TABLE colonies ADD COLUMN uranium_ore INTEGER DEFAULT 0")
+    db.Exec("ALTER TABLE colonies ADD COLUMN diamond_ore INTEGER DEFAULT 0")
+    db.Exec("ALTER TABLE colonies ADD COLUMN plutonium INTEGER DEFAULT 0")
 
 	initIdentity()
 }

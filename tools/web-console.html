@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>OwnWorld Commander v4 (Empire Era)</title>
+    <title>OwnWorld Commander v4.5 (Industrial Era)</title>
     <style>
         :root { --bg:#050510; --panel:#151520; --accent:#00d2ff; --warn:#ffae00; --danger:#ff3333; --success:#00ff9d; --text:#ddd; }
         body { background:var(--bg); color:var(--text); font-family:monospace; margin:0; padding:20px; }
@@ -33,6 +33,9 @@
         .module-tag { display: inline-block; background: #333; padding: 2px 5px; font-size: 0.8em; margin-right: 3px; border-radius: 3px; }
         
         .context-bar { background: #111; padding: 10px; margin-bottom: 20px; border: 1px solid #444; display: flex; align-items: center; justify-content: space-between; }
+        
+        .building-group { display:grid; grid-template-columns:1fr 1fr; gap:5px; margin-bottom:10px; }
+        .b-header { grid-column:span 2; font-weight:bold; color:var(--warn); margin:10px 0 5px; border-bottom:1px solid #333;}
     </style>
 </head>
 <body>
@@ -84,16 +87,37 @@
 
         <div class="sidebar">
             <div class="panel">
-                <h3 style="margin-top:0; color:var(--warn)">PROVINCE ACTIONS</h3>
+                <h3 style="margin-top:0; color:var(--warn)">PROVINCE CONSTRUCTION</h3>
                 <input id="action-amt" type="number" value="1" placeholder="Amount">
-                <div style="display:grid; grid-template-columns:1fr 1fr; gap:5px;">
-                    <button onclick="quickBuild('farm')">Build Farm</button>
-                    <button onclick="quickBuild('well')">Build Well</button>
-                    <button onclick="quickBuild('steel_mill')">Steel Mill</button>
-                    <button onclick="quickBuild('winery')">Winery</button>
+                
+                <div class="b-header">Basics</div>
+                <div class="building-group">
+                    <button onclick="quickBuild('farm')">Farm</button>
+                    <button onclick="quickBuild('well')">Well</button>
+                    <button onclick="quickBuild('urban_housing')">Housing</button>
                 </div>
+
+                <div class="b-header">Extraction (Raw)</div>
+                <div class="building-group">
+                    <button onclick="quickBuild('iron_mine')">Iron Mine</button>
+                    <button onclick="quickBuild('carbon_extractor')">Carbon Ext.</button>
+                    <button onclick="quickBuild('platinum_mine')">Platinum Mine</button>
+                    <button onclick="quickBuild('uranium_mine')">Uranium Mine</button>
+                    <button onclick="quickBuild('diamond_mine')">Diamond Mine</button>
+                </div>
+                
+                <div class="b-header">Refineries (Slow)</div>
+                <div class="building-group">
+                    <button onclick="quickBuild('steel_mill')">Steel Mill</button>
+                    <button onclick="quickBuild('fuel_synthesizer')">Fuel Synth</button>
+                    <button onclick="quickBuild('platinum_refinery')">Plat. Refinery</button>
+                    <button onclick="quickBuild('uranium_enricher')">Enricher</button>
+                    <button onclick="quickBuild('diamond_cutter')">Gem Cutter</button>
+                    <button onclick="quickBuild('breeder_reactor')">Reactor</button>
+                </div>
+
                 <div style="margin-top:10px; border-top:1px solid #333; padding-top:10px;">
-                    <button style="width:100%; border-color:var(--success); color:var(--success)" onclick="quickBurn('steel')">BURN STEEL (Sell)</button>
+                    <button style="width:100%; border-color:var(--success); color:var(--success)" onclick="quickBurn('fuel')">BURN FUEL (Sell)</button>
                 </div>
             </div>
             
@@ -160,7 +184,7 @@
                 showAuthError("Error: " + txt);
             }
         } catch(e) {
-            showAuthError("Connection Failed");
+            showAuthError("Connection Failed (Or Reg Disabled)");
         }
     }
 
@@ -258,11 +282,23 @@
                         <strong style="font-size:1.2em;">${escapeHTML(c.name)} ${isParent ? '(CAPITAL)' : ''}</strong>
                         <span>SYS: ${c.system_id}</span>
                     </div>
+                    <div style="font-size:0.8em; color:#666; margin-bottom:5px;">RAW MATERIALS (ORE)</div>
                     <div class="res-grid">
                         ${renderResBox('IRON', c.iron)}
-                        ${renderResBox('STEEL', c.steel)}
-                        ${renderResBox('WINE', c.wine)}
+                        ${renderResBox('CARBON', c.carbon)}
+                        ${renderResBox('URANIUM(O)', c.uranium_ore)}
+                        ${renderResBox('PLAT.(O)', c.platinum_ore)}
+                        ${renderResBox('DIAM.(O)', c.diamond_ore)}
                         ${renderResBox('FOOD', c.food)}
+                    </div>
+                    <div style="font-size:0.8em; color:var(--success); margin-bottom:5px;">MANUFACTURED GOODS</div>
+                    <div class="res-grid">
+                        ${renderResBox('STEEL', c.steel)}
+                        ${renderResBox('FUEL', c.fuel)}
+                        ${renderResBox('URANIUM', c.uranium)}
+                        ${renderResBox('PLATINUM', c.platinum)}
+                        ${renderResBox('DIAMOND', c.diamond)}
+                        ${renderResBox('PLUTONIUM', c.plutonium)}
                     </div>
                     <div style="background:#111; padding:10px; font-size:0.9em; color:#888; margin-top:10px;">
                         POP: ${c.pop_laborers} | ELITES: ${c.pop_elites} | STABILITY: ${Math.floor(c.stability_current)}%

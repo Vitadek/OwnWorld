@@ -84,3 +84,5 @@ Architecture
 License
 
 MIT
+
+OWNWORLD_COMMAND_CONTROL=true

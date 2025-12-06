@@ -93,16 +93,31 @@ var UnitCosts = map[string]map[string]int{
 }
 
 var BuildingCosts = map[string]map[string]int{
+    // Basics
 	"farm":            {"iron": 10},
 	"well":            {"iron": 10},
-	"iron_mine":       {"food": 500},
-	"shipyard":        {"iron": 2000, "carbon": 500},
 	"urban_housing":   {"iron": 50},
-	"pilot_academy":   {"iron": 1000, "gold": 100},
-	"financial_center": {"iron": 5000, "gold": 1000},
-    // New Buildings for Industry
-    "steel_mill":      {"iron": 500, "carbon": 500},
-    "winery":          {"iron": 100, "gold": 50},
+    
+    // Mines (Raw Material Extraction)
+	"iron_mine":       {"food": 500},
+    "carbon_extractor": {"iron": 100, "food": 200},
+    "platinum_mine":   {"iron": 1000, "food": 1000},
+    "uranium_mine":    {"iron": 2000, "steel": 500},
+    "diamond_mine":    {"iron": 1500, "food": 1000},
+
+    // Processing & Refining (The Scaffolding)
+	"shipyard":           {"iron": 2000, "carbon": 500},
+    "steel_mill":         {"iron": 500, "carbon": 500},
+    "fuel_synthesizer":   {"iron": 1000, "steel": 200}, // Refines Carbon -> Fuel
+    "platinum_refinery":  {"steel": 1000, "carbon": 1000},
+    "uranium_enricher":   {"steel": 2000, "platinum": 100},
+    "diamond_cutter":     {"steel": 500, "iron": 500},
+    "breeder_reactor":    {"steel": 5000, "uranium": 500, "platinum": 200}, // Creates Plutonium
+
+    // Advanced
+    "winery":             {"iron": 100, "gold": 50},
+	"pilot_academy":      {"iron": 1000, "gold": 100},
+	"financial_center":   {"iron": 5000, "gold": 1000},
 }
 
 // HARD-CODED CLASSES (The "Physics" of the Hull)
