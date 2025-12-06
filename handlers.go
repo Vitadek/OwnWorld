@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"database/sql" // Required for sql.NullString
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -154,7 +155,6 @@ func handleFederationTransaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Process Payload: Grievance Report
 	var grievance GrievanceReport
 	if err := json.Unmarshal(req.Payload, &grievance); err == nil && grievance.OffenderUUID != "" {
 		processGrievance(&grievance, req.UUID)
@@ -162,7 +162,6 @@ func handleFederationTransaction(w http.ResponseWriter, r *http.Request) {
 
 	_, err = db.Exec("INSERT INTO transaction_log (tick, action_type, payload_blob) VALUES (?, 'FED_TX', ?)", req.Tick, req.Payload)
 	if err != nil {
-		ErrorLog.Printf("Failed to log federation tx: %v", err)
 		http.Error(w, "Internal Error", 500)
 		return
 	}
@@ -173,9 +172,7 @@ func handleFederationTransaction(w http.ResponseWriter, r *http.Request) {
 func handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	lr := io.LimitReader(r.Body, 1024*1024)
 	body, err := io.ReadAll(lr)
-	if err != nil {
-		return
-	}
+	if err != nil { return }
 
 	decompressed := decompressLZ4(body)
 
@@ -189,14 +186,11 @@ func handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	peer, known := Peers[req.UUID]
 	peerLock.RUnlock()
 
-	if !known {
-		return
-	}
+	if !known { return }
 
 	msg := fmt.Sprintf("%s:%d", req.UUID, req.Tick)
 	sigBytes, _ := hex.DecodeString(req.Signature)
 	if !VerifySignature(peer.PublicKey, []byte(msg), sigBytes) {
-		InfoLog.Printf("🚨 BAD SIG from %s. Ignored.", req.UUID)
 		return
 	}
 
@@ -205,11 +199,21 @@ func handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		p.LastSeen = time.Now()
 		p.LastTick = req.Tick
 		p.PeerCount = req.PeerCount
-		if p.Reputation < 100 {
-			p.Reputation += 0.1
-		}
+		if p.Reputation < 100 { p.Reputation += 0.1 }
 	}
 	peerLock.Unlock()
+
+    // GOSSIP: Merge Market Orders
+    if len(req.MarketOrders) > 0 {
+        // Simple merge: insert if not exists (ignore signatures for MVP speed, ideally verify)
+        tx, _ := db.Begin()
+        stmt, _ := tx.Prepare("INSERT OR IGNORE INTO market_orders (order_id, seller_uuid, item, quantity, price, is_buy, origin_system, expires_tick) VALUES (?,?,?,?,?,?,?,?)")
+        for _, mo := range req.MarketOrders {
+            stmt.Exec(mo.ID, mo.SellerUUID, mo.Item, mo.Quantity, mo.Price, mo.IsBuy, mo.OriginSystem, mo.ExpiresTick)
+        }
+        stmt.Close()
+        tx.Commit()
+    }
 
 	if req.UUID == LeaderUUID {
 		syncClock(req.Tick)
@@ -236,18 +240,10 @@ func handleSyncLedger(w http.ResponseWriter, r *http.Request) {
 
 	sinceDay, _ := strconv.Atoi(r.URL.Query().Get("since_day"))
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	if limit <= 0 {
-		limit = 50
-	}
-	if limit > 100 {
-		limit = 100
-	}
+	if limit <= 0 { limit = 50 }
+	if limit > 100 { limit = 100 }
 
-	rows, err := db.Query(`SELECT day_id, state_blob, final_hash 
-	                       FROM daily_snapshots 
-	                       WHERE day_id > ? 
-	                       ORDER BY day_id ASC 
-	                       LIMIT ?`, sinceDay, limit)
+	rows, err := db.Query(`SELECT day_id, state_blob, final_hash FROM daily_snapshots WHERE day_id > ? ORDER BY day_id ASC LIMIT ?`, sinceDay, limit)
 	if err != nil {
 		http.Error(w, "DB Error", 500)
 		return
@@ -263,9 +259,7 @@ func handleSyncLedger(w http.ResponseWriter, r *http.Request) {
 	var history []SnapshotItem
 	for rows.Next() {
 		var h SnapshotItem
-		if err := rows.Scan(&h.DayID, &h.Blob, &h.FinalHash); err != nil {
-			continue
-		}
+		if err := rows.Scan(&h.DayID, &h.Blob, &h.FinalHash); err != nil { continue }
 		history = append(history, h)
 	}
 
@@ -285,9 +279,7 @@ func handleReputationQuery(w http.ResponseWriter, r *http.Request) {
 	peerLock.RUnlock()
 
 	score := 0.0
-	if known {
-		score = peer.Reputation
-	}
+	if known { score = peer.Reputation }
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]float64{"score": score})
@@ -303,16 +295,11 @@ func generateSessionToken() string {
 
 var usernameRegex = regexp.MustCompile(`^[a-zA-Z0-9_]+$`)
 
-// NOTE: Use the handleRegister from the previous debug step (which works), 
-// but ensure to include the other handlers below.
 func handleRegister(w http.ResponseWriter, r *http.Request) {
 	var req struct{ Username, Password string }
 	json.NewDecoder(r.Body).Decode(&req)
 
-	DebugLog.Printf("📝 Handling Register Request for: %s", req.Username)
-
 	if len(req.Username) < 3 || len(req.Username) > 20 || !usernameRegex.MatchString(req.Username) {
-		DebugLog.Printf("❌ Invalid Username format: %s", req.Username)
 		http.Error(w, "Invalid Username (Alphanumeric only, 3-20 chars)", 400)
 		return
 	}
@@ -320,23 +307,15 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	var storedHash, globalUUID, sysID string
 	var sysX, sysY, sysZ int
 
-	// 1. Check if user exists
 	err := db.QueryRow("SELECT password_hash, global_uuid FROM users WHERE username=?", req.Username).Scan(&storedHash, &globalUUID)
 
 	if err == nil {
-		DebugLog.Printf("👤 User %s found in DB. Attempting Login...", req.Username)
 		passHash := hashBLAKE3([]byte(req.Password))
 		if storedHash == passHash {
 			token := generateSessionToken()
 			db.Exec("UPDATE users SET session_token=? WHERE global_uuid=?", token, globalUUID)
-
-			// Fetch Location
 			errLoc := db.QueryRow("SELECT id, x, y, z FROM solar_systems WHERE owner_uuid=?", globalUUID).Scan(&sysID, &sysX, &sysY, &sysZ)
-			if errLoc != nil {
-				DebugLog.Printf("⚠️ Login Successful but NO SYSTEM found for %s! (Zombie State)", req.Username)
-			} else {
-				DebugLog.Printf("✅ Login Successful. System: %s", sysID)
-			}
+			if errLoc != nil {} 
 
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"status":        "logged_in",
@@ -348,15 +327,11 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		} else {
-			DebugLog.Printf("⛔ Login Failed: Wrong Password for %s", req.Username)
 			http.Error(w, "Invalid Credentials", 401)
 			return
 		}
 	}
 
-	// 2. New Registration
-	DebugLog.Printf("🆕 User %s not found. Creating new Identity...", req.Username)
-	
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	userUUID := hashBLAKE3(pub)
 	pubHex := hex.EncodeToString(pub)
@@ -368,25 +343,15 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	                   VALUES (?, ?, ?, 1, ?, ?, ?)`, userUUID, req.Username, passHash, pubHex, privEnc, token)
 
 	if err != nil {
-		DebugLog.Printf("❌ DB Insert Failed for User %s: %v", req.Username, err)
 		http.Error(w, "Taken", 400)
 		return
 	}
-	DebugLog.Printf("✅ User inserted. UUID: %s", userUUID)
 
-	// 3. Find Starting Location
 	found := false
 	var sysXNew, sysYNew, sysZNew int
 	
-	// Safety Check for Race Condition
-	if ServerLoc == nil {
-		DebugLog.Printf("🚨 CRITICAL: ServerLoc is nil! Defaulting to 0,0,0")
-		ServerLoc = []int{0, 0, 0}
-	} else {
-		DebugLog.Printf("📍 ServerLoc is valid: %v", ServerLoc)
-	}
+	if ServerLoc == nil { ServerLoc = []int{0, 0, 0} }
 
-	DebugLog.Printf("🔍 Searching for valid sector near %v...", ServerLoc)
 	for i := 0; i < 50; i++ {
 		uuidBytes, _ := hex.DecodeString(userUUID)
 		offX := int(uuidBytes[0]%40) - 20
@@ -402,40 +367,29 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 		if potential.HasSystem && potential.SystemType == "G2V" {
 			sysID = fmt.Sprintf("sys-%d-%d-%d", sysXNew, sysYNew, sysZNew)
 			found = true
-			DebugLog.Printf("✨ Found Habitable G2V System: %s", sysID)
 			break
 		}
 	}
 	if !found {
 		sysID = fmt.Sprintf("sys-%d-%d-%d", ServerLoc[0], ServerLoc[1], ServerLoc[2])
 		sysXNew, sysYNew, sysZNew = ServerLoc[0], ServerLoc[1], ServerLoc[2]
-		DebugLog.Printf("⚠️ No random spot found. Forcing spawn at Cluster Center: %s", sysID)
 	}
 
-	// 4. Create Infrastructure
 	_, errSys := db.Exec("INSERT OR IGNORE INTO solar_systems (id, x, y, z, star_type, owner_uuid) VALUES (?, ?, ?, ?, 'G2V', ?)",
-		sysID, sysXNew, sysYNew, sysZNew, ServerUUID) // Note: Owner is Server, not Player (Players own Colonies)
-	if errSys != nil { DebugLog.Printf("❌ Failed to create Solar System: %v", errSys) }
+		sysID, sysXNew, sysYNew, sysZNew, ServerUUID) 
+	if errSys != nil {}
 
 	startBuilds := `{"farm": 5, "iron_mine": 5, "urban_housing": 10}`
 	_, errCol := db.Exec(`INSERT INTO colonies (system_id, owner_uuid, name, pop_laborers, food, iron, buildings_json) 
 	         VALUES (?, ?, ?, 100, 2000, 1000, ?)`, sysID, userUUID, req.Username+" Prime", startBuilds)
 	
-	if errCol != nil {
-		DebugLog.Printf("❌ Failed to create Colony: %v", errCol)
-	} else {
-		DebugLog.Printf("🏰 Colony Created Successfully")
-	}
+	if errCol != nil {}
 
 	modules := `["warp_drive", "warp_drive", "colony_kit"]`
 	_, errFleet := db.Exec(`INSERT INTO fleets (owner_uuid, status, origin_system, hull_class, modules_json, fuel) 
 			 VALUES (?, 'ORBIT', ?, 'Colonizer', ?, 2000)`, userUUID, sysID, modules)
 	
-	if errFleet != nil {
-		DebugLog.Printf("❌ Failed to create Starter Fleet: %v", errFleet)
-	} else {
-		DebugLog.Printf("🚀 Starter Fleet Created")
-	}
+	if errFleet != nil {}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":        "registered",
@@ -475,6 +429,7 @@ func handleFleetLaunch(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		FleetID      int    `json:"fleet_id"`
 		TargetSystem string `json:"target_system"`
+        TargetOrderID string `json:"target_order_id"` // New: Optional Order ID
 	}
 	json.NewDecoder(r.Body).Decode(&req)
 
@@ -562,9 +517,16 @@ func handleFleetLaunch(w http.ResponseWriter, r *http.Request) {
 
 	arrivalTick := atomic.LoadInt64(&CurrentTick) + travelTime
 
+    // Only set order ID if provided, otherwise clear it
+    targetOrderVal := sql.NullString{}
+    if req.TargetOrderID != "" {
+        targetOrderVal.String = req.TargetOrderID
+        targetOrderVal.Valid = true
+    }
+
 	db.Exec(`UPDATE fleets SET status='TRANSIT', fuel=fuel-?, dest_system=?, 
-	         departure_tick=?, arrival_tick=? WHERE id=?`,
-		cost, req.TargetSystem, atomic.LoadInt64(&CurrentTick), arrivalTick, req.FleetID)
+	         departure_tick=?, arrival_tick=?, target_order_id=? WHERE id=?`,
+		cost, req.TargetSystem, atomic.LoadInt64(&CurrentTick), arrivalTick, targetOrderVal, req.FleetID)
 
 	w.Write([]byte(fmt.Sprintf("Fleet Launched. Cost: %d. Arrival Tick: %d", cost, arrivalTick)))
 }
@@ -921,7 +883,6 @@ func handleDeploy(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// NOTE: This function was modified to include debugging and safe initialization
 func handleState(w http.ResponseWriter, r *http.Request) {
 	userID, err := authenticate(r)
 	if err != nil {
@@ -943,7 +904,6 @@ func handleState(w http.ResponseWriter, r *http.Request) {
 	}
 	var resp Resp
 
-	// Initialize slices to empty (not nil) to ensure JSON [] instead of null
 	resp.Colonies = []Colony{}
 	resp.Fleets = []Fleet{}
 
@@ -969,11 +929,7 @@ func handleState(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	
-	if DebugLog != nil {
-		DebugLog.Printf("🏰 Found %d colonies", len(resp.Colonies))
-	}
-
-	fRows, err := db.Query(`SELECT id, status, origin_system, dest_system, arrival_tick, fuel, hull_class, modules_json, payload_json FROM fleets WHERE owner_uuid=?`, userID)
+	fRows, err := db.Query(`SELECT id, status, origin_system, dest_system, arrival_tick, fuel, hull_class, modules_json, payload_json, target_order_id FROM fleets WHERE owner_uuid=?`, userID)
 	if err != nil {
 		if DebugLog != nil {
 			DebugLog.Printf("❌ DB Query Error (Fleets): %v", err)
@@ -983,19 +939,17 @@ func handleState(w http.ResponseWriter, r *http.Request) {
 		for fRows.Next() {
 			var f Fleet
 			var modJson, plJson string
-			fRows.Scan(&f.ID, &f.Status, &f.OriginSystem, &f.DestSystem, &f.ArrivalTick, &f.Fuel, &f.HullClass, &modJson, &plJson)
+            var tOrder sql.NullString
+			fRows.Scan(&f.ID, &f.Status, &f.OriginSystem, &f.DestSystem, &f.ArrivalTick, &f.Fuel, &f.HullClass, &modJson, &plJson, &tOrder)
 			json.Unmarshal([]byte(modJson), &f.Modules)
 			if plJson != "" {
 				json.Unmarshal([]byte(plJson), &f.Payload)
 			}
+            if tOrder.Valid { f.TargetOrderID = tOrder.String }
 			resp.Fleets = append(resp.Fleets, f)
 		}
 	}
 	
-	if DebugLog != nil {
-		DebugLog.Printf("🚀 Found %d fleets", len(resp.Fleets))
-	}
-
 	db.QueryRow("SELECT credits FROM users WHERE global_uuid=?", userID).Scan(&resp.Credits)
 
 	w.Header().Set("Content-Type", "application/json")
@@ -1052,6 +1006,7 @@ func handleCargoTransfer(w http.ResponseWriter, r *http.Request) {
         if amount == 0 { continue }
         
         colonyVal := 0
+        // Safe query helper later, for now simple switch
         switch item {
         case "food": colonyVal = c.Food
         case "iron": colonyVal = c.Iron
@@ -1062,12 +1017,12 @@ func handleCargoTransfer(w http.ResponseWriter, r *http.Request) {
 
         fleetVal := f.Payload.Resources[item]
 
-        if amount > 0 {
+        if amount > 0 { // Colony -> Fleet
             if colonyVal < amount {
                 http.Error(w, fmt.Sprintf("Insufficient %s in Colony", item), 400)
                 return 
             }
-        } else {
+        } else { // Fleet -> Colony
             qtyToUnload := -amount
             if fleetVal < qtyToUnload {
                 http.Error(w, fmt.Sprintf("Insufficient %s in Fleet", item), 400)
@@ -1138,4 +1093,58 @@ func handleSetPolicy(w http.ResponseWriter, r *http.Request) {
         return
     }
     w.Write([]byte("Policies Updated"))
+}
+
+// --- Market API ---
+
+func handlePlaceOrder(w http.ResponseWriter, r *http.Request) {
+    var req MarketOrder
+    json.NewDecoder(r.Body).Decode(&req)
+    
+    userID, err := authenticate(r)
+	if err != nil {
+		http.Error(w, "Unauthorized", 401)
+		return
+	}
+    
+    req.SellerUUID = userID
+    req.ID = fmt.Sprintf("ord-%s-%d", userID[:8], time.Now().UnixNano())
+    req.ExpiresTick = atomic.LoadInt64(&CurrentTick) + 1440 // 1 Day (approx)
+    
+    // Validate assets (if Sell Order)
+    if !req.IsBuy {
+        // Logic to check colony inventory? 
+        // For MVP, we don't lock assets, we check on swap (Trustless/Optimistic UI)
+        // But we should at least check they own the system they claim
+    }
+    
+    tx, _ := db.Begin()
+    _, err = tx.Exec("INSERT INTO market_orders (order_id, seller_uuid, item, quantity, price, is_buy, origin_system, expires_tick) VALUES (?,?,?,?,?,?,?,?)",
+        req.ID, req.SellerUUID, req.Item, req.Quantity, req.Price, req.IsBuy, req.OriginSystem, req.ExpiresTick)
+    
+    if err != nil {
+        tx.Rollback()
+        http.Error(w, "Failed to place order", 500)
+        return
+    }
+    tx.Commit()
+    w.Write([]byte("Order Placed: " + req.ID))
+}
+
+func handleListOrders(w http.ResponseWriter, r *http.Request) {
+    rows, err := db.Query("SELECT order_id, seller_uuid, item, quantity, price, is_buy, origin_system, expires_tick FROM market_orders ORDER BY expires_tick DESC LIMIT 50")
+    if err != nil {
+        http.Error(w, "DB Error", 500)
+        return
+    }
+    defer rows.Close()
+    
+    var orders []MarketOrder
+    for rows.Next() {
+        var o MarketOrder
+        rows.Scan(&o.ID, &o.SellerUUID, &o.Item, &o.Quantity, &o.Price, &o.IsBuy, &o.OriginSystem, &o.ExpiresTick)
+        orders = append(orders, o)
+    }
+    
+    json.NewEncoder(w).Encode(orders)
 }

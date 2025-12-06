@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
-	"strings" // Added missing import
+	"strings" 
 	"sync"
 	"sync/atomic"
 	"time"
@@ -37,11 +37,25 @@ func broadcastHeartbeat() {
 
 	myTick := atomic.LoadInt64(&CurrentTick)
 
+    // Gather Market Orders to Gossip (Last 5 created locally or new ones)
+    // Simple logic: Fetch active orders
+    var orders []MarketOrder
+    rows, _ := db.Query("SELECT order_id, seller_uuid, item, quantity, price, is_buy, origin_system, expires_tick FROM market_orders WHERE expires_tick > ? ORDER BY rowid DESC LIMIT 5", myTick)
+    if rows != nil {
+        defer rows.Close()
+        for rows.Next() {
+            var o MarketOrder
+            rows.Scan(&o.ID, &o.SellerUUID, &o.Item, &o.Quantity, &o.Price, &o.IsBuy, &o.OriginSystem, &o.ExpiresTick)
+            orders = append(orders, o)
+        }
+    }
+
 	payload := HeartbeatRequest{
 		UUID:      ServerUUID,
 		Tick:      myTick,
 		PeerCount: len(peersList),
 		GenHash:   GenesisHash,
+        MarketOrders: orders, // Attach Market Gossip
 	}
 
 	msg := fmt.Sprintf("%s:%d", payload.UUID, payload.Tick)

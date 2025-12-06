@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql" // Required for sql.NullString
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -13,11 +14,10 @@ import (
 
 // --- Constants ---
 const (
-	UniverseSize = 1000000 // Limit coordinates to +/- 1,000,000
-	MaxResource  = 2000000000 // Cap resources to ~2 Billion to prevent int32/int64 issues
+	UniverseSize = 1000000 
+	MaxResource  = 2000000000 
 )
 
-// --- Helper: Safe Addition ---
 func safeAdd(current, amount int) int {
 	if amount > 0 && current > MaxResource-amount {
 		return MaxResource
@@ -25,7 +25,7 @@ func safeAdd(current, amount int) int {
 	return current + amount
 }
 
-// --- World Gen (Deterministic) ---
+// --- World Gen ---
 
 func GetEfficiency(planetID int, resource string) float64 {
 	input := fmt.Sprintf("%d-%s-%s", planetID, resource, ServerUUID)
@@ -34,8 +34,6 @@ func GetEfficiency(planetID int, resource string) float64 {
 	val := binary.BigEndian.Uint16(hashBytes[:2])
 	return (float64(val)/65535.0)*2.4 + 0.1
 }
-
-// --- Procedural Generation (Universal Truth) ---
 
 type SectorPotential struct {
 	HasSystem  bool               `json:"has_system"`
@@ -75,7 +73,6 @@ func GetSectorData(x, y, z int) SectorPotential {
 	res["vegetation"] = (float64(hashBytes[4]) / 255.0) * 2.4 + 0.1
 	res["water"] = (float64(hashBytes[5]) / 255.0) * 2.4 + 0.1
 	
-    // New Raw Materials
     res["uranium_ore"] = (float64(hashBytes[6]) / 255.0) * 1.5 + 0.05
     res["platinum_ore"] = (float64(hashBytes[8]) / 255.0) * 1.5 + 0.05
     res["diamond_ore"] = (float64(hashBytes[9]) / 255.0) * 1.2 + 0.01
@@ -90,7 +87,7 @@ func GetSectorData(x, y, z int) SectorPotential {
 	}
 }
 
-// --- Physics Helpers (Needed by Handlers) ---
+// --- Physics & Fleet Logic ---
 
 func GetSystemCoords(sysID string) []int {
 	var x, y, z int
@@ -109,72 +106,148 @@ func CalculateFuelCost(origin, target []int, mass int, targetUUID string) int {
 	distance := math.Sqrt(dist)
 
 	multiplier := 10.0
-
 	if targetUUID == ServerUUID {
 		multiplier = 1.0
 	} else {
 		peerLock.RLock()
 		peer, known := Peers[targetUUID]
 		peerLock.RUnlock()
-
-		if known {
-			if peer.Relation == 1 {
-				multiplier = 2.5
-			}
+		if known && peer.Relation == 1 {
+			multiplier = 2.5
 		}
 	}
-
 	return int(distance * float64(mass) * multiplier)
 }
 
 func resolveDeepSpaceArrival(fleet Fleet) {
+    // 1. Discovery Logic
 	var x, y, z int
 	n, _ := fmt.Sscanf(fleet.DestSystem, "sys-%d-%d-%d", &x, &y, &z)
 
 	if n != 3 {
 		coords := GetSystemCoords(fleet.DestSystem)
 		x, y, z = coords[0], coords[1], coords[2]
-		if x == 0 && y == 0 && z == 0 && fleet.DestSystem != "sys-0-0-0" {
-			return
-		}
 	}
 
 	if x > UniverseSize || x < -UniverseSize || y > UniverseSize || y < -UniverseSize || z > UniverseSize || z < -UniverseSize {
-		InfoLog.Printf("🚫 Fleet %d attempted to reach the Far Lands (%d,%d,%d). Simulation halted for safety.", fleet.ID, x, y, z)
 		return
 	}
 
 	var exists int
 	db.QueryRow("SELECT count(*) FROM solar_systems WHERE x=? AND y=? AND z=?", x, y, z).Scan(&exists)
-	if exists > 0 {
-		return
+	if exists == 0 {
+		potential := GetSectorData(x, y, z)
+		if potential.HasSystem {
+			sysID := fmt.Sprintf("sys-%d-%d-%d", x, y, z)
+			db.Exec("INSERT OR IGNORE INTO solar_systems (id, type, x, y, z, owner_uuid) VALUES (?, ?, ?, ?, ?, ?)",
+				sysID, potential.SystemType, x, y, z, "")
+			InfoLog.Printf("🚀 Fleet %d discovered %s!", fleet.ID, sysID)
+		}
 	}
 
-	potential := GetSectorData(x, y, z)
-
-	if potential.HasSystem {
-		sysID := fmt.Sprintf("sys-%d-%d-%d", x, y, z)
-		db.Exec("INSERT OR IGNORE INTO solar_systems (id, type, x, y, z, owner_uuid) VALUES (?, ?, ?, ?, ?, ?)",
-			sysID, potential.SystemType, x, y, z, "")
-
-		InfoLog.Printf("🚀 Fleet %d confirmed %s system at %s!", fleet.ID, potential.SystemType, sysID)
-	} else {
-		InfoLog.Printf("🚀 Fleet %d arrived at void sector %d,%d,%d.", fleet.ID, x, y, z)
-	}
+    // 2. ATOMIC SWAP LOGIC (Market Fulfillment)
+    if fleet.TargetOrderID != "" {
+        row := db.QueryRow("SELECT item, quantity, price, is_buy, seller_uuid FROM market_orders WHERE order_id=?", fleet.TargetOrderID)
+        
+        var item, sellerUUID string
+        var qty, price int
+        var isBuy bool
+        
+        if err := row.Scan(&item, &qty, &price, &isBuy, &sellerUUID); err == nil {
+            // Fetch Colony at destination (The Trading Partner)
+            var colID int
+            var colOwner string
+            // Dynamic query to find the colony in the system matching the order owner
+            errCol := db.QueryRow("SELECT id, owner_uuid FROM colonies WHERE system_id=? AND owner_uuid=?", fleet.DestSystem, sellerUUID).Scan(&colID, &colOwner)
+            
+            if errCol == nil {
+                // Execute Trade
+                tx, _ := db.Begin()
+                success := false
+                
+                if !isBuy { 
+                    // This was a SELL order (Partner is Selling, Fleet is Buying)
+                    // Fleet needs Credits, Partner needs Goods.
+                    // WAIT: Fleet sent to BUY means Fleet must carry CREDITS.
+                    cost := price * qty
+                    
+                    if fleet.Payload.Credits >= cost {
+                        // Check if colony has goods
+                        res, _ := tx.Exec(fmt.Sprintf("UPDATE colonies SET %s = %s - ? WHERE id=? AND %s >= ?", item, item, item), qty, colID, qty)
+                        if n, _ := res.RowsAffected(); n > 0 {
+                            // Transfer Goods to Fleet
+                            if fleet.Payload.Resources == nil { fleet.Payload.Resources = make(map[string]int) }
+                            fleet.Payload.Resources[item] += qty
+                            fleet.Payload.Credits -= cost
+                            
+                            // Pay the Colony Owner (User)
+                            tx.Exec("UPDATE users SET credits = credits + ? WHERE global_uuid=?", cost, colOwner)
+                            
+                            // Update Fleet
+                            fJson, _ := json.Marshal(fleet.Payload)
+                            tx.Exec("UPDATE fleets SET payload_json=? WHERE id=?", string(fJson), fleet.ID)
+                            
+                            success = true
+                            InfoLog.Printf("💰 Trade Executed: Fleet %d bought %d %s from %s", fleet.ID, qty, item, colOwner)
+                        }
+                    }
+                } else {
+                    // This was a BUY order (Partner wants to Buy, Fleet is Selling)
+                    // Fleet needs Goods, Partner needs Credits (User credits usually, or Colony credits? Let's use User credits for simplicity)
+                    // Actually, "Does the colony have credits?" usually refers to the User balance.
+                    
+                    payout := price * qty
+                    // Check if fleet has goods
+                    if fleet.Payload.Resources[item] >= qty {
+                        // Check if Buyer (Colony Owner) has credits
+                        var buyerCreds int
+                        tx.QueryRow("SELECT credits FROM users WHERE global_uuid=?", colOwner).Scan(&buyerCreds)
+                        
+                        if buyerCreds >= payout {
+                            // Deduct Item from Fleet
+                            fleet.Payload.Resources[item] -= qty
+                            
+                            // Add Item to Colony
+                            tx.Exec(fmt.Sprintf("UPDATE colonies SET %s = %s + ? WHERE id=?", item, item), qty, colID)
+                            
+                            // Transfer Credits: Buyer -> Fleet Owner
+                            tx.Exec("UPDATE users SET credits = credits - ? WHERE global_uuid=?", payout, colOwner)
+                            tx.Exec("UPDATE users SET credits = credits + ? WHERE global_uuid=?", payout, fleet.OwnerUUID)
+                            
+                            // Update Fleet
+                            fJson, _ := json.Marshal(fleet.Payload)
+                            tx.Exec("UPDATE fleets SET payload_json=? WHERE id=?", string(fJson), fleet.ID)
+                            
+                            success = true
+                            InfoLog.Printf("💰 Trade Executed: Fleet %d sold %d %s to %s", fleet.ID, qty, item, colOwner)
+                        }
+                    }
+                }
+                
+                if success {
+                    // Delete the order as fulfilled
+                    tx.Exec("DELETE FROM market_orders WHERE order_id=?", fleet.TargetOrderID)
+                    tx.Commit()
+                } else {
+                    tx.Rollback()
+                    InfoLog.Printf("⚠️ Trade Failed for Fleet %d (Funds/Goods missing)", fleet.ID)
+                }
+            }
+        }
+    }
 }
 
-// --- New Mechanics: Refining & Combat ---
+// --- Industry & Happiness ---
 
-func processIndustry(c *Colony) {
-    // Helper to process standard conversion with time penalty (throughput limit per tick)
+func processIndustry(c *Colony, efficiencyMult float64) {
     runRefinery := func(building string, inputName string, inputAmt int, outputName string, outputAmt int, inputStock *int, outputStock *int) {
         if count, ok := c.Buildings[building]; ok && count > 0 {
             totalInput := inputAmt * count
             totalOutput := outputAmt * count
             
-            // Efficiency bonus based on location
-            efficiency := GetEfficiency(c.ID, inputName)
-            adjustedOutput := int(float64(totalOutput) * efficiency) + 1
+            eff := GetEfficiency(c.ID, inputName)
+            // Apply Stability Bonus
+            adjustedOutput := int(float64(totalOutput) * eff * efficiencyMult) + 1
 
             if *inputStock >= totalInput {
                 *inputStock -= totalInput
@@ -183,28 +256,61 @@ func processIndustry(c *Colony) {
         }
     }
 
-	// 1. Steel Production (Iron + Carbon -> Steel)
     runRefinery("steel_mill", "iron", 2, "steel", 1, &c.Iron, &c.Steel)
-
-    // 2. Fuel Synthesis (Carbon -> Fuel)
-    // This adds the "time penalty" because you can only convert X amount per tick per building
     runRefinery("fuel_synthesizer", "carbon", 5, "fuel", 2, &c.Carbon, &c.Fuel)
-
-	// 3. Wine Production (Luxury)
     runRefinery("winery", "vegetation", 5, "wine", 1, &c.Vegetation, &c.Wine)
-
-    // 4. Platinum Refining (Ore -> Ingot)
     runRefinery("platinum_refinery", "platinum_ore", 3, "platinum", 1, &c.PlatinumOre, &c.Platinum)
-
-    // 5. Uranium Enrichment (Ore -> Fuel Grade)
     runRefinery("uranium_enricher", "uranium_ore", 5, "uranium", 1, &c.UraniumOre, &c.Uranium)
-
-    // 6. Diamond Cutting (Ore -> Gem)
     runRefinery("diamond_cutter", "diamond_ore", 4, "diamond", 1, &c.DiamondOre, &c.Diamond)
-
-    // 7. Plutonium Breeding (Uranium -> Plutonium)
-    // Very slow/expensive process
     runRefinery("breeder_reactor", "uranium", 10, "plutonium", 1, &c.Uranium, &c.Plutonium)
+}
+
+func calculateSatisfaction(supply, demand int) float64 {
+    if demand <= 0 { return 1.0 }
+    if supply >= demand { return 1.0 }
+    return float64(supply) / float64(demand)
+}
+
+func snapshotWorld() {
+	rows, err := db.Query(`SELECT id, buildings_json, pop_laborers, pop_specialists, pop_elites, iron, carbon, water, gold, vegetation, oxygen FROM colonies`)
+	if err != nil {
+		ErrorLog.Printf("Snapshot Query Error: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	var colonies []Colony
+	for rows.Next() {
+		var c Colony
+		var bJson string
+		rows.Scan(&c.ID, &bJson, &c.PopLaborers, &c.PopSpecialists, &c.PopElites, &c.Iron, &c.Carbon, &c.Water, &c.Gold, &c.Vegetation, &c.Oxygen)
+		json.Unmarshal([]byte(bJson), &c.Buildings)
+		colonies = append(colonies, c)
+	}
+
+	rawJSON, _ := json.Marshal(colonies)
+	compressed := compressLZ4(rawJSON)
+
+	var prevHash string
+	err = db.QueryRow("SELECT final_hash FROM daily_snapshots ORDER BY day_id DESC LIMIT 1").Scan(&prevHash)
+	if err != nil {
+		prevHash = GenesisHash
+	}
+
+	combined := append(compressed, []byte(prevHash)...)
+	finalHash := hashBLAKE3(combined)
+
+	dayID := int(CurrentTick / 17280)
+
+	InfoLog.Printf("📸 Snapshot Day %d. Size: %d bytes. Hash: %s", dayID, len(compressed), finalHash)
+
+	db.Exec("INSERT OR REPLACE INTO daily_snapshots (day_id, state_blob, final_hash) VALUES (?, ?, ?)",
+		dayID, compressed, finalHash)
+}
+
+func reportGrievance(offender, victim string, damage int) {
+	db.Exec("INSERT INTO grievances (offender_uuid, victim_uuid, damage_amount, tick) VALUES (?, ?, ?, ?)",
+		offender, victim, damage, atomic.LoadInt64(&CurrentTick))
 }
 
 func resolveSectorConflict(currentTick int64) {
@@ -309,67 +415,31 @@ func resolveSectorConflict(currentTick int64) {
 	}
 }
 
-func reportGrievance(offender, victim string, damage int) {
-	db.Exec("INSERT INTO grievances (offender_uuid, victim_uuid, damage_amount, tick) VALUES (?, ?, ?, ?)",
-		offender, victim, damage, atomic.LoadInt64(&CurrentTick))
-}
-
-// --- Core Loop (Event Sourced) ---
-
-func snapshotWorld() {
-	rows, err := db.Query(`SELECT id, buildings_json, pop_laborers, pop_specialists, pop_elites, iron, carbon, water, gold, vegetation, oxygen FROM colonies`)
-	if err != nil {
-		ErrorLog.Printf("Snapshot Query Error: %v", err)
-		return
-	}
-	defer rows.Close()
-
-	var colonies []Colony
-	for rows.Next() {
-		var c Colony
-		var bJson string
-		rows.Scan(&c.ID, &bJson, &c.PopLaborers, &c.PopSpecialists, &c.PopElites, &c.Iron, &c.Carbon, &c.Water, &c.Gold, &c.Vegetation, &c.Oxygen)
-		json.Unmarshal([]byte(bJson), &c.Buildings)
-		colonies = append(colonies, c)
-	}
-
-	rawJSON, _ := json.Marshal(colonies)
-	compressed := compressLZ4(rawJSON)
-
-	var prevHash string
-	err = db.QueryRow("SELECT final_hash FROM daily_snapshots ORDER BY day_id DESC LIMIT 1").Scan(&prevHash)
-	if err != nil {
-		prevHash = GenesisHash
-	}
-
-	combined := append(compressed, []byte(prevHash)...)
-	finalHash := hashBLAKE3(combined)
-
-	dayID := int(CurrentTick / 17280)
-
-	InfoLog.Printf("📸 Snapshot Day %d. Size: %d bytes. Hash: %s", dayID, len(compressed), finalHash)
-
-	db.Exec("INSERT OR REPLACE INTO daily_snapshots (day_id, state_blob, final_hash) VALUES (?, ?, ?)",
-		dayID, compressed, finalHash)
-}
-
 func tickWorld() {
 	stateLock.Lock()
 	defer stateLock.Unlock()
 
 	pruneTransactionCache()
-
 	current := atomic.AddInt64(&CurrentTick, 1)
 	db.Exec("INSERT INTO transaction_log (tick, action_type) VALUES (?, 'TICK')", current)
 
-	fRows, _ := db.Query("SELECT id, dest_system, status, hull_class, modules_json FROM fleets WHERE arrival_tick <= ? AND status='TRANSIT'", current)
+    // Clean Expired Market Orders
+    if current % 100 == 0 {
+        db.Exec("DELETE FROM market_orders WHERE expires_tick < ?", current)
+    }
+
+    // Process Fleets
+	fRows, _ := db.Query("SELECT id, dest_system, status, hull_class, modules_json, owner_uuid, payload_json, target_order_id FROM fleets WHERE arrival_tick <= ? AND status='TRANSIT'", current)
 	defer fRows.Close()
 
 	for fRows.Next() {
 		var f Fleet
-		var modJson string
-		fRows.Scan(&f.ID, &f.DestSystem, &f.Status, &f.HullClass, &modJson)
+		var modJson, plJson string
+        var tOrder sql.NullString
+		fRows.Scan(&f.ID, &f.DestSystem, &f.Status, &f.HullClass, &modJson, &f.OwnerUUID, &plJson, &tOrder)
 		json.Unmarshal([]byte(modJson), &f.Modules)
+        if plJson != "" { json.Unmarshal([]byte(plJson), &f.Payload) }
+        if tOrder.Valid { f.TargetOrderID = tOrder.String }
 
 		resolveDeepSpaceArrival(f)
 		db.Exec("UPDATE fleets SET status='ORBIT' WHERE id=?", f.ID)
@@ -377,13 +447,12 @@ func tickWorld() {
 
 	resolveSectorConflict(current)
 
+    // Process Colonies (Happiness & Industry)
 	rows, err := db.Query(`SELECT id, buildings_json, policies_json, pop_laborers, pop_specialists, pop_elites, 
 	                       food, water, carbon, gold, fuel, steel, wine, vegetation, stability_current, stability_target, iron,
                            uranium, uranium_ore, platinum, platinum_ore, diamond, diamond_ore, plutonium
 	                       FROM colonies`)
-	if err != nil {
-		return
-	}
+	if err != nil { return }
 	defer rows.Close()
 
 	type ColUpdate struct {
@@ -405,80 +474,85 @@ func tickWorld() {
 		json.Unmarshal([]byte(bJson), &c.Buildings)
 		
 		c.Policies = make(map[string]bool)
-		if pJson != "" {
-			json.Unmarshal([]byte(pJson), &c.Policies)
-		}
+		if pJson != "" { json.Unmarshal([]byte(pJson), &c.Policies) }
 
-		// Mining (Extraction Logic)
-		foodEff := GetEfficiency(c.ID, "food")
-        uraniumEff := GetEfficiency(c.ID, "uranium_ore")
-        platinumEff := GetEfficiency(c.ID, "platinum_ore")
-        diamondEff := GetEfficiency(c.ID, "diamond_ore")
-        carbonEff := GetEfficiency(c.ID, "carbon")
-        ironEff := GetEfficiency(c.ID, "iron")
-		
+        // --- 1. Base Extraction (Laborers Work) ---
+        // Efficiency multiplier based on current stability (High stability = Bonus)
+        effMult := 1.0
+        if c.StabilityCurrent >= 90.0 { effMult = 1.10 }
+        if c.StabilityCurrent <= 20.0 { effMult = 0.0 } // Strikes!
+
+		foodEff := GetEfficiency(c.ID, "food") * effMult
+        
 		c.Food = safeAdd(c.Food, int(float64(c.Buildings["farm"]*5)*foodEff))
 		c.Water = safeAdd(c.Water, int(float64(c.Buildings["well"]*5)*foodEff))
-        c.UraniumOre = safeAdd(c.UraniumOre, int(float64(c.Buildings["uranium_mine"]*2)*uraniumEff))
-        c.PlatinumOre = safeAdd(c.PlatinumOre, int(float64(c.Buildings["platinum_mine"]*2)*platinumEff))
-        c.DiamondOre = safeAdd(c.DiamondOre, int(float64(c.Buildings["diamond_mine"]*2)*diamondEff))
-        c.Carbon = safeAdd(c.Carbon, int(float64(c.Buildings["carbon_extractor"]*10)*carbonEff))
-        c.Iron = safeAdd(c.Iron, int(float64(c.Buildings["iron_mine"]*10)*ironEff))
+        c.UraniumOre = safeAdd(c.UraniumOre, int(float64(c.Buildings["uranium_mine"]*2)*GetEfficiency(c.ID, "uranium_ore")*effMult))
+        c.PlatinumOre = safeAdd(c.PlatinumOre, int(float64(c.Buildings["platinum_mine"]*2)*GetEfficiency(c.ID, "platinum_ore")*effMult))
+        c.DiamondOre = safeAdd(c.DiamondOre, int(float64(c.Buildings["diamond_mine"]*2)*GetEfficiency(c.ID, "diamond_ore")*effMult))
+        c.Carbon = safeAdd(c.Carbon, int(float64(c.Buildings["carbon_extractor"]*10)*GetEfficiency(c.ID, "carbon")*effMult))
+        c.Iron = safeAdd(c.Iron, int(float64(c.Buildings["iron_mine"]*10)*GetEfficiency(c.ID, "iron")*effMult))
 
-		processIndustry(&c)
+        // --- 2. Industry (Specialists Work) ---
+        // If specialists are unhappy (Stability < 40), industry slows down
+        indMult := 1.0
+        if c.StabilityCurrent < 40 { indMult = 0.5 }
+		processIndustry(&c, indMult)
 
-		foodConsumptionRate := 1.0
-		stabilityMod := 0.0
-		
-		if c.Policies["rationing"] {
-			foodConsumptionRate = 0.5       
-			stabilityMod -= 2.0             
-		}
-		if c.Policies["propaganda"] {
-			stabilityMod += 1.0             
-			c.Gold -= 10                    
-		}
+        // --- 3. Stratified Consumption & Happiness ---
+        
+        // Laborers (Survival: Food, Water)
+        labNeedFood := c.PopLaborers / 10 // 1 unit per 10 ppl
+        labNeedWater := c.PopLaborers / 10
+        satLabFood := 1.0
+        satLabWater := 1.0
+        
+        if c.Food >= labNeedFood { c.Food -= labNeedFood } else { satLabFood = calculateSatisfaction(c.Food, labNeedFood); c.Food = 0 }
+        if c.Water >= labNeedWater { c.Water -= labNeedWater } else { satLabWater = calculateSatisfaction(c.Water, labNeedWater); c.Water = 0 }
+        
+        satLabor := (satLabFood + satLabWater) / 2.0
 
-		reqFood := int(float64(c.PopLaborers * 1 + c.PopSpecialists * 2 + c.PopElites * 5) * foodConsumptionRate)
-		reqCarbon := c.PopSpecialists / 10
-		reqWine := c.PopElites / 10
+        // Specialists (Comfort: Steel, Fuel)
+        specNeedSteel := c.PopSpecialists / 20
+        specNeedFuel := c.PopSpecialists / 20
+        satSpecSteel := 1.0
+        satSpecFuel := 1.0
+        
+        if c.Steel >= specNeedSteel { c.Steel -= specNeedSteel } else { satSpecSteel = calculateSatisfaction(c.Steel, specNeedSteel); c.Steel = 0 }
+        if c.Fuel >= specNeedFuel { c.Fuel -= specNeedFuel } else { satSpecFuel = calculateSatisfaction(c.Fuel, specNeedFuel); c.Fuel = 0 }
+        
+        satSpec := (satSpecSteel + satSpecFuel) / 2.0
+        if c.PopSpecialists == 0 { satSpec = 1.0 }
 
-		if c.Food >= reqFood {
-			c.Food -= reqFood
-			c.StabilityTarget += 0.1
-		} else {
-			c.Food = 0
-			c.StabilityTarget -= 5.0
-			c.PopLaborers = (c.PopLaborers * 95) / 100
-			c.PopSpecialists = (c.PopSpecialists * 95) / 100
-			c.PopElites = (c.PopElites * 95) / 100
-		}
+        // Elites (Luxury: Wine, Platinum)
+        eliteNeedWine := c.PopElites / 5
+        eliteNeedPlat := c.PopElites / 10
+        satEliteWine := 1.0
+        satElitePlat := 1.0
+        
+        if c.Wine >= eliteNeedWine { c.Wine -= eliteNeedWine } else { satEliteWine = calculateSatisfaction(c.Wine, eliteNeedWine); c.Wine = 0 }
+        if c.Platinum >= eliteNeedPlat { c.Platinum -= eliteNeedPlat } else { satElitePlat = calculateSatisfaction(c.Platinum, eliteNeedPlat); c.Platinum = 0 }
+        
+        satElite := (satEliteWine + satElitePlat) / 2.0
+        if c.PopElites == 0 { satElite = 1.0 }
 
-		if c.Carbon >= reqCarbon {
-			c.Carbon -= reqCarbon
-		} else {
-			c.StabilityTarget -= 0.5
-		}
-
-		if c.Wine >= reqWine {
-			c.Wine -= reqWine
-			c.StabilityTarget += 0.5
-		} else {
-			if c.PopElites > 0 {
-				c.StabilityTarget -= 5.0
-			}
-		}
-
-		c.StabilityTarget += stabilityMod
+        // --- 4. Weighted Stability ---
+        // Formula: (Labor * 0.5) + (Specialist * 0.3) + (Elite * 0.2)
+        // Result is 0.0 to 1.0, scaled to 100.
+        
+        weightedSat := (satLabor * 0.5) + (satSpec * 0.3) + (satElite * 0.2)
+        c.StabilityTarget = weightedSat * 100.0
+        
+        // Starvation Penalty (Laborers dying)
+        if satLabor < 0.5 {
+            deathToll := int(float64(c.PopLaborers) * 0.05) // 5% die
+            c.PopLaborers -= deathToll
+            c.StabilityTarget -= 20.0 // Riots
+        }
 
 		diff := c.StabilityTarget - c.StabilityCurrent
-		c.StabilityCurrent += diff * 0.05
-		if c.StabilityTarget > 100 {
-			c.StabilityTarget = 100
-		}
-		if c.StabilityTarget < 0 {
-			c.StabilityTarget = 0
-		}
+		c.StabilityCurrent += diff * 0.1 // Move 10% towards target per tick
+        if c.StabilityCurrent < 0 { c.StabilityCurrent = 0 }
+        if c.StabilityCurrent > 100 { c.StabilityCurrent = 100 }
 
 		updates = append(updates, ColUpdate{
 			ID: c.ID,
@@ -522,16 +596,11 @@ func tickWorld() {
 }
 
 func runGameLoop() {
-    // FIX: Slowed tick down to 60s (1 Minute)
 	ticker := time.NewTicker(60 * time.Second)
 	for {
 		<-ticker.C
-
 		offset := CalculateOffset()
-		if offset > 0 {
-			time.Sleep(offset)
-		}
-
+		if offset > 0 { time.Sleep(offset) }
 		tickWorld()
 	}
 }

@@ -90,6 +90,7 @@ func initDB() {
 		hull_class TEXT,
 		modules_json TEXT,
 		payload_json TEXT, 
+        target_order_id TEXT,
 		
 		ark_ship INTEGER DEFAULT 0, 
 		fighters INTEGER DEFAULT 0,
@@ -98,6 +99,18 @@ func initDB() {
 		
 		start_coords TEXT, dest_coords TEXT
 	);
+
+    CREATE TABLE IF NOT EXISTS market_orders (
+        order_id TEXT PRIMARY KEY,
+        seller_uuid TEXT,
+        item TEXT,
+        quantity INTEGER,
+        price INTEGER,
+        is_buy BOOLEAN,
+        origin_system TEXT,
+        expires_tick INTEGER,
+        signature TEXT
+    );
 
 	CREATE TABLE IF NOT EXISTS transaction_log (
 		id INTEGER PRIMARY KEY AUTOINCREMENT, tick INTEGER, action_type TEXT, payload_blob BLOB
@@ -117,12 +130,13 @@ func initDB() {
 	`
 	if _, err := db.Exec(schema); err != nil { panic(err) }
 
-    // Migrations for existing saves
+    // Migrations
 	db.Exec("ALTER TABLE colonies ADD COLUMN parent_colony_id INTEGER DEFAULT 0")
 	db.Exec("ALTER TABLE colonies ADD COLUMN steel INTEGER DEFAULT 0")
 	db.Exec("ALTER TABLE colonies ADD COLUMN wine INTEGER DEFAULT 0")
 	db.Exec("ALTER TABLE colonies ADD COLUMN policies_json TEXT DEFAULT '{}'")
 	db.Exec("ALTER TABLE fleets ADD COLUMN payload_json TEXT")
+    db.Exec("ALTER TABLE fleets ADD COLUMN target_order_id TEXT") // New migration
 
     // New Materials Migrations
     db.Exec("ALTER TABLE colonies ADD COLUMN platinum_ore INTEGER DEFAULT 0")

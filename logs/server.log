@@ -826,3 +826,8 @@ INFO: 2025/12/05 23:32:13 main.go:158: OWNWORLD BOOT SEQUENCE (V3.1)
 INFO: 2025/12/05 23:32:13 main.go:159: Mode: promiscuous | Control: true
 INFO: 2025/12/05 23:32:13 main.go:66: No SEED_NODES found. Starting as Lonely/Genesis Node.
 INFO: 2025/12/05 23:32:13 main.go:211: Node 835da612bd3f8add161d6f053dce9dd1cbaf87f455e0ad9ba83f7126bd39f254 Listening on :8080
+INFO: 2025/12/06 07:39:26 utils.go:48: 🔧 DEBUG MODE ENABLED
+INFO: 2025/12/06 07:39:26 main.go:158: OWNWORLD BOOT SEQUENCE (V3.1)
+INFO: 2025/12/06 07:39:26 main.go:159: Mode: promiscuous | Control: true
+INFO: 2025/12/06 07:39:26 main.go:211: Node 835da612bd3f8add161d6f053dce9dd1cbaf87f455e0ad9ba83f7126bd39f254 Listening on :8080
+INFO: 2025/12/06 07:39:26 main.go:66: No SEED_NODES found. Starting as Lonely/Genesis Node.

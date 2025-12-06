@@ -19,6 +19,19 @@ type Peer struct {
     Location    []int // [x, y, z]
 }
 
+type MarketOrder struct {
+    ID           string `json:"id"`
+    SellerUUID   string `json:"seller_uuid"`
+    Item         string `json:"item"`
+    Quantity     int    `json:"quantity"`
+    Price        int    `json:"price"` // Per unit
+    IsBuy        bool   `json:"is_buy"` // True = Buy Order, False = Sell Order
+    OriginSystem string `json:"origin_system"` // System ID where the trade happens
+    ExpiresTick  int64  `json:"expires_tick"`
+    Signature    string `json:"signature"`
+    RelayCount   int    `json:"relay_count"` // TTL
+}
+
 type HandshakeRequest struct {
 	UUID        string `json:"uuid"`
 	GenesisHash string `json:"genesis_hash"`
@@ -83,7 +96,8 @@ type FleetPayload struct {
     PopLaborers   int            `json:"laborers"`
     PopSpecialists int           `json:"specialists"`
     Resources     map[string]int `json:"resources"`   
-    CultureBonus  float64        `json:"culture"`     
+    CultureBonus  float64        `json:"culture"`
+    Credits       int            `json:"credits"` // New: Fleets can carry cash for trades
 }
 
 type Fleet struct {
@@ -99,6 +113,7 @@ type Fleet struct {
 	Modules      []string `json:"modules"`
 	
 	Payload      FleetPayload `json:"payload"`
+    TargetOrderID string      `json:"target_order_id"` // New: For Atomic Swaps
 	
 	ArkShip    int `json:"ark_ship"`
 	Fighters   int `json:"fighters"`
@@ -119,6 +134,7 @@ type HeartbeatRequest struct {
 	PeerCount int    `json:"peer_count"`
 	GenHash   string `json:"gen_hash"`
 	Signature string `json:"sig"` 
+    MarketOrders []MarketOrder `json:"market_orders"` // New: Gossip Payload
 }
 
 type GrievanceReport struct {
