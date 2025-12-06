@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>OwnWorld Uplink</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        space: {
+                            900: '#050510',
+                            800: '#151520',
+                            700: '#252535',
+                        },
+                        neon: {
+                            blue: '#00d2ff',
+                            purple: '#bd00ff',
+                            green: '#00ff9d',
+                            red: '#ff3333',
+                            amber: '#ffae00'
+                        }
+                    },
+                    animation: {
+                        'pulse-slow': 'pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+                    }
+                }
+            }
+        }
+    </script>
+
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    
+    <!-- Babel -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    
+    <style>
+        body { background-color: #050510; color: #e2e8f0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; -webkit-tap-highlight-color: transparent; }
+        .glass-panel { background: rgba(21, 21, 32, 0.95); backdrop-filter: blur(8px); border: 1px solid rgba(255, 255, 255, 0.1); }
+        .neon-border { box-shadow: 0 0 5px rgba(0, 210, 255, 0.2); }
+        
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: #050510; }
+        ::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #00d2ff; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useCallback, useMemo } = React;
+
+        // --- Config ---
+        const DEFAULT_API = "http://localhost:8080";
+        
+        // --- Icons (Lucide wrapper) ---
+        const Icon = ({ name, size = 20, className = "" }) => {
+            useEffect(() => {
+                lucide.createIcons();
+            }, [name]);
+            return <i data-lucide={name} className={className} style={{ width: size, height: size }}></i>;
+        };
+
+        // --- Helpers ---
+        const formatNumber = (num) => {
+            if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
+            if (num >= 1000) return (num / 1000).toFixed(1) + 'k';
+            return num;
+        };
+
+        const apiRequest = async (endpoint, method = 'GET', body = null, session = null) => {
+            const headers = { 'Content-Type': 'application/json' };
+            if (session) {
+                headers['X-User-UUID'] = session.uuid;
+                headers['X-Session-Token'] = session.token;
+            }
+            
+            try {
+                const opts = { method, headers };
+                if (body) opts.body = JSON.stringify(body);
+                
+                const res = await fetch(`${session?.url || DEFAULT_API}/api/${endpoint}`, opts);
+                
+                if (!res.ok) {
+                    const txt = await res.text();
+                    throw new Error(txt || res.statusText);
+                }
+                
+                // Handle text responses (like "Build Complete") vs JSON
+                const contentType = res.headers.get("content-type");
+                if (contentType && contentType.indexOf("application/json") !== -1) {
+                    return await res.json();
+                } else {
+                    return { message: await res.text() };
+                }
+            } catch (err) {
+                throw err;
+            }
+        };
+
+        // --- Components ---
+
+        const Toast = ({ message, type, onClose }) => {
+            useEffect(() => {
+                const timer = setTimeout(onClose, 3000);
+                return () => clearTimeout(timer);
+            }, []);
+            
+            const colors = {
+                success: 'border-neon-green text-neon-green',
+                error: 'border-neon-red text-neon-red',
+                info: 'border-neon-blue text-neon-blue'
+            };
+
+            return (
+                <div className={`fixed top-4 right-4 z-50 glass-panel border-l-4 px-6 py-4 rounded shadow-2xl flex items-center gap-3 ${colors[type] || colors.info} animate-bounce`}>
+                    <span className="font-bold">{message}</span>
+                </div>
+            );
+        };
+
+        const LoginScreen = ({ onLogin }) => {
+            const [url, setUrl] = useState(localStorage.getItem('ownworld_url') || DEFAULT_API);
+            const [username, setUsername] = useState('');
+            const [password, setPassword] = useState('');
+            const [loading, setLoading] = useState(false);
+            const [error, setError] = useState('');
+
+            const handleLogin = async (e) => {
+                e.preventDefault();
+                setLoading(true);
+                setError('');
+                
+                try {
+                    // Use the register endpoint for login/register as per engine logic
+                    const res = await fetch(`${url}/api/register`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ username, password })
+                    });
+                    
+                    if (!res.ok) throw new Error(await res.text());
+                    
+                    const data = await res.json();
+                    localStorage.setItem('ownworld_url', url);
+                    
+                    onLogin({
+                        uuid: data.user_uuid,
+                        token: data.session_token,
+                        username: username,
+                        url: url
+                    });
+                } catch (err) {
+                    setError(err.message);
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            return (
+                <div className="min-h-screen flex items-center justify-center bg-[url('https://images.unsplash.com/photo-1462331940025-496dfbfc7564?q=80&w=2000&auto=format&fit=crop')] bg-cover bg-center">
+                    <div className="absolute inset-0 bg-black/80"></div>
+                    <div className="relative z-10 w-full max-w-md p-8 glass-panel rounded-xl neon-border m-4">
+                        <div className="text-center mb-8">
+                            <h1 className="text-4xl font-black tracking-tighter text-neon-blue mb-2">OWNWORLD</h1>
+                            <p className="text-gray-400 text-sm">FEDERATION UPLINK v5.0</p>
+                        </div>
+                        
+                        <form onSubmit={handleLogin} className="space-y-4">
+                            <div>
+                                <label className="text-xs text-neon-blue uppercase font-bold">Server URL</label>
+                                <input value={url} onChange={e => setUrl(e.target.value)} className="w-full bg-black/50 border border-gray-700 rounded p-3 text-white focus:border-neon-blue focus:outline-none" />
+                            </div>
+                            <div>
+                                <label className="text-xs text-neon-blue uppercase font-bold">Commander Name</label>
+                                <input value={username} onChange={e => setUsername(e.target.value)} className="w-full bg-black/50 border border-gray-700 rounded p-3 text-white focus:border-neon-blue focus:outline-none" />
+                            </div>
+                            <div>
+                                <label className="text-xs text-neon-blue uppercase font-bold">Access Code</label>
+                                <input type="password" value={password} onChange={e => setPassword(e.target.value)} className="w-full bg-black/50 border border-gray-700 rounded p-3 text-white focus:border-neon-blue focus:outline-none" />
+                            </div>
+                            
+                            {error && <div className="text-neon-red text-sm text-center bg-red-900/20 p-2 rounded border border-neon-red">{error}</div>}
+                            
+                            <button disabled={loading} className="w-full bg-neon-blue/20 hover:bg-neon-blue/40 text-neon-blue border border-neon-blue font-bold py-3 rounded transition-all disabled:opacity-50">
+                                {loading ? 'ESTABLISHING LINK...' : 'INITIALIZE UPLINK'}
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            );
+        };
+
+        const ResourcePill = ({ name, value, max = null }) => {
+            const isLow = max && value < (max * 0.1);
+            return (
+                <div className={`flex flex-col items-center bg-black/40 p-2 rounded border ${isLow ? 'border-neon-red' : 'border-gray-800'}`}>
+                    <span className="text-[10px] text-gray-400 uppercase">{name}</span>
+                    <span className={`font-mono font-bold ${isLow ? 'text-neon-red' : 'text-white'}`}>{formatNumber(value)}</span>
+                </div>
+            );
+        };
+
+        const Shipyard = ({ colony, session, onSuccess }) => {
+            const [hull, setHull] = useState('Fighter');
+            const [modules, setModules] = useState([]);
+            
+            const hulls = {
+                'Fighter': { eng: 1, wpn: 4, spec: 0, desc: 'Combat patrol craft' },
+                'Colonizer': { eng: 2, wpn: 0, spec: 1, desc: 'Settles new worlds (Requires Ark Kit)' },
+                'Frigate': { eng: 4, wpn: 0, spec: 0, desc: 'Heavy transport/escort' },
+                'Bomber': { eng: 1, wpn: 0, spec: 1, desc: 'Siege platform' }
+            };
+
+            const availModules = [
+                { id: 'warp_drive', name: 'Warp Drive', cost: 1000 },
+                { id: 'laser', name: 'Laser', cost: 200 },
+                { id: 'colony_kit', name: 'Colony Kit', cost: 5000 },
+                { id: 'booster', name: 'Booster', cost: 100 }
+            ];
+
+            const handleBuild = async () => {
+                const payload = hull === 'Colonizer' 
+                    ? { laborers: 100, specialists: 0, culture: 10, resources: { food: 500, iron: 500 } }
+                    : { laborers: 0, specialists: 0, culture: 0, resources: {} };
+
+                try {
+                    await apiRequest('construct', 'POST', {
+                        colony_id: colony.id,
+                        hull_class: hull,
+                        modules: modules,
+                        payload
+                    }, session);
+                    onSuccess("Construction Started");
+                    setModules([]);
+                } catch (e) {
+                    onSuccess("Failed: " + e.message, 'error');
+                }
+            };
+
+            const toggleModule = (modId) => {
+                setModules(prev => [...prev, modId]);
+            };
+
+            const clearModules = () => setModules([]);
+
+            return (
+                <div className="space-y-4">
+                    <div className="grid grid-cols-2 gap-2">
+                        {Object.keys(hulls).map(h => (
+                            <button key={h} onClick={() => setHull(h)}
+                                className={`p-3 rounded border text-left ${hull === h ? 'border-neon-blue bg-neon-blue/10' : 'border-gray-700'}`}>
+                                <div className="font-bold text-neon-blue">{h}</div>
+                                <div className="text-xs text-gray-500">{hulls[h].desc}</div>
+                            </button>
+                        ))}
+                    </div>
+
+                    <div className="glass-panel p-3 rounded">
+                        <div className="flex justify-between items-center mb-2">
+                            <span className="text-xs uppercase text-gray-400">Modules Installed</span>
+                            <button onClick={clearModules} className="text-xs text-neon-red">Reset</button>
+                        </div>
+                        <div className="flex flex-wrap gap-2 min-h-[40px]">
+                            {modules.map((m, i) => (
+                                <span key={i} className="bg-gray-800 text-xs px-2 py-1 rounded border border-gray-600">{m}</span>
+                            ))}
+                            {modules.length === 0 && <span className="text-gray-600 text-sm italic">Empty slots...</span>}
+                        </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                        {availModules.map(m => (
+                            <button key={m.id} onClick={() => toggleModule(m.id)} className="p-2 border border-gray-700 hover:border-neon-green rounded text-sm flex justify-between">
+                                <span>{m.name}</span>
+                                <span className="text-gray-400">{m.cost} Fe</span>
+                            </button>
+                        ))}
+                    </div>
+
+                    <button onClick={handleBuild} className="w-full bg-neon-green/20 border border-neon-green text-neon-green font-bold py-3 rounded mt-4">
+                        INITIATE CONSTRUCTION
+                    </button>
+                </div>
+            );
+        };
+
+        const Dashboard = ({ session, onLogout }) => {
+            const [tab, setTab] = useState('colonies');
+            const [state, setState] = useState({ colonies: [], fleets: [], credits: 0 });
+            const [status, setStatus] = useState({ tick: 0, leader: '...' });
+            const [toast, setToast] = useState(null);
+            const [selectedColony, setSelectedColony] = useState(null); // For modal interactions
+
+            const refresh = useCallback(async () => {
+                try {
+                    const [stData, sData] = await Promise.all([
+                        apiRequest('state', 'GET', null, session),
+                        apiRequest('status', 'GET', null, session)
+                    ]);
+                    setState(stData);
+                    setStatus(sData);
+                } catch (e) {
+                    console.error(e);
+                }
+            }, [session]);
+
+            useEffect(() => {
+                refresh();
+                const interval = setInterval(refresh, 2000);
+                return () => clearInterval(interval);
+            }, [refresh]);
+
+            const handleAction = async (action, payload) => {
+                try {
+                    const res = await apiRequest(action, 'POST', payload, session);
+                    setToast({ msg: res.message || "Command Executed", type: 'success' });
+                    refresh();
+                } catch (e) {
+                    setToast({ msg: e.message, type: 'error' });
+                }
+            };
+
+            // Renderers
+            const renderColonies = () => (
+                <div className="space-y-4 pb-20">
+                    {state.colonies.map(c => (
+                        <div key={c.id} className="glass-panel p-4 rounded-xl border-l-4 border-l-neon-purple">
+                            <div className="flex justify-between items-start mb-4">
+                                <div>
+                                    <h3 className="font-bold text-lg text-white">{c.name}</h3>
+                                    <span className="text-xs text-gray-500 font-mono">SYS: {c.system_id} | POP: {c.pop_laborers}</span>
+                                </div>
+                                <div className="text-right">
+                                    <div className="text-xs text-gray-400">Stability</div>
+                                    <div className={`font-bold ${c.stability_current < 50 ? 'text-neon-red' : 'text-neon-green'}`}>
+                                        {Math.floor(c.stability_current)}%
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div className="grid grid-cols-4 gap-2 mb-4">
+                                <ResourcePill name="Food" value={c.food} />
+                                <ResourcePill name="Iron" value={c.iron} />
+                                <ResourcePill name="Fuel" value={c.fuel} />
+                                <ResourcePill name="Credits" value={c.gold} /> {/* Treating Gold as generic value store here for visual simplification */}
+                            </div>
+
+                            <div className="flex gap-2 overflow-x-auto pb-2">
+                                <button onClick={() => setSelectedColony({...c, view: 'build'})} className="flex items-center gap-1 bg-gray-800 px-3 py-2 rounded text-sm hover:text-neon-blue border border-transparent hover:border-neon-blue">
+                                    <Icon name="hammer" size={14} /> Build
+                                </button>
+                                <button onClick={() => setSelectedColony({...c, view: 'shipyard'})} className="flex items-center gap-1 bg-gray-800 px-3 py-2 rounded text-sm hover:text-neon-purple border border-transparent hover:border-neon-purple">
+                                    <Icon name="rocket" size={14} /> Shipyard
+                                </button>
+                                <button onClick={() => handleAction('bank/burn', {colony_id: c.id, item: 'fuel', amount: 100})} className="flex items-center gap-1 bg-gray-800 px-3 py-2 rounded text-sm hover:text-neon-green border border-transparent hover:border-neon-green">
+                                    <Icon name="dollar-sign" size={14} /> Sell Fuel
+                                </button>
+                            </div>
+                        </div>
+                    ))}
+                    {state.colonies.length === 0 && <div className="text-center text-gray-500 mt-10">No Colonies Found. Check connection.</div>}
+                </div>
+            );
+
+            const renderFleets = () => (
+                <div className="space-y-4 pb-20">
+                    {state.fleets.map(f => (
+                        <div key={f.id} className="glass-panel p-4 rounded-xl border-l-4 border-l-neon-blue">
+                            <div className="flex justify-between items-center mb-2">
+                                <span className="font-bold text-neon-blue">{f.hull_class.toUpperCase()}</span>
+                                <span className={`text-xs px-2 py-1 rounded ${f.status === 'ORBIT' ? 'bg-green-900 text-green-300' : 'bg-yellow-900 text-yellow-300'}`}>
+                                    {f.status}
+                                </span>
+                            </div>
+                            <div className="text-sm text-gray-400 mb-4">
+                                Location: <span className="text-white">{f.dest_system || f.origin_system}</span>
+                            </div>
+                            {f.status === 'ORBIT' && (
+                                <div className="flex gap-2">
+                                    <button onClick={() => {
+                                        const sys = prompt("Target System ID (e.g. sys-0-0-0):");
+                                        if(sys) handleAction('fleet/launch', {fleet_id: f.id, target_system: sys});
+                                    }} className="flex-1 bg-neon-blue/20 text-neon-blue py-2 rounded text-sm font-bold border border-neon-blue">
+                                        LAUNCH
+                                    </button>
+                                    {f.hull_class === 'Colonizer' && (
+                                        <button onClick={() => {
+                                            const name = prompt("New Colony Name:");
+                                            if(name) handleAction('deploy', {fleet_id: f.id, name});
+                                        }} className="flex-1 bg-neon-purple/20 text-neon-purple py-2 rounded text-sm font-bold border border-neon-purple">
+                                            DEPLOY
+                                        </button>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                    ))}
+                    {state.fleets.length === 0 && <div className="text-center text-gray-500 mt-10">No Fleets Active. Build one in a Shipyard.</div>}
+                </div>
+            );
+
+            return (
+                <div className="min-h-screen pb-16">
+                    {/* Header */}
+                    <header className="fixed top-0 left-0 right-0 h-16 glass-panel z-40 px-4 flex justify-between items-center neon-border">
+                        <div>
+                            <div className="text-neon-blue font-black text-xl tracking-tighter">OWNWORLD</div>
+                            <div className="text-[10px] text-gray-400">TICK: <span className="text-white font-mono">{status.tick}</span></div>
+                        </div>
+                        <div className="text-right">
+                            <div className="text-xs text-gray-400">CREDITS</div>
+                            <div className="text-neon-green font-mono font-bold">{formatNumber(state.credits)}</div>
+                        </div>
+                    </header>
+
+                    {/* Main Content */}
+                    <main className="pt-20 px-4">
+                        {tab === 'colonies' && renderColonies()}
+                        {tab === 'fleets' && renderFleets()}
+                        {tab === 'map' && (
+                            <div className="text-center p-10 glass-panel rounded-xl">
+                                <Icon name="map" size={48} className="mx-auto text-gray-600 mb-4" />
+                                <h3 className="text-xl font-bold">Sector Scan</h3>
+                                <p className="text-gray-400 mb-4">Enter coordinates to scan deep space.</p>
+                                <div className="flex gap-2 justify-center">
+                                    <input placeholder="X" className="w-16 bg-black p-2 rounded text-center" id="scanX" defaultValue="0"/>
+                                    <input placeholder="Y" className="w-16 bg-black p-2 rounded text-center" id="scanY" defaultValue="0"/>
+                                    <input placeholder="Z" className="w-16 bg-black p-2 rounded text-center" id="scanZ" defaultValue="0"/>
+                                </div>
+                                <button onClick={async () => {
+                                    const x = parseInt(document.getElementById('scanX').value);
+                                    const y = parseInt(document.getElementById('scanY').value);
+                                    const z = parseInt(document.getElementById('scanZ').value);
+                                    const res = await apiRequest('scan', 'POST', {x,y,z}, session);
+                                    alert(JSON.stringify(res, null, 2));
+                                }} className="mt-4 bg-gray-800 px-4 py-2 rounded hover:bg-gray-700">SCAN SECTOR</button>
+                            </div>
+                        )}
+                    </main>
+
+                    {/* Modal Overlay */}
+                    {selectedColony && (
+                        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+                            <div className="bg-space-800 w-full max-w-lg rounded-xl border border-gray-700 p-6 shadow-2xl animate-in slide-in-from-bottom duration-300">
+                                <div className="flex justify-between mb-4">
+                                    <h2 className="text-xl font-bold text-white">{selectedColony.view === 'shipyard' ? 'Orbital Shipyard' : 'Construction Queue'}</h2>
+                                    <button onClick={() => setSelectedColony(null)} className="text-gray-400 hover:text-white"><Icon name="x" /></button>
+                                </div>
+                                
+                                <div className="max-h-[60vh] overflow-y-auto">
+                                    {selectedColony.view === 'shipyard' ? (
+                                        <Shipyard 
+                                            colony={selectedColony} 
+                                            session={session} 
+                                            onSuccess={(msg, type='success') => {
+                                                setToast({msg, type});
+                                                setSelectedColony(null);
+                                                refresh();
+                                            }} 
+                                        />
+                                    ) : (
+                                        <div className="grid grid-cols-2 gap-3">
+                                            {['farm', 'well', 'urban_housing', 'iron_mine', 'carbon_extractor'].map(b => (
+                                                <button key={b} onClick={() => {
+                                                    handleAction('build', {colony_id: selectedColony.id, structure: b, amount: 1});
+                                                    setSelectedColony(null);
+                                                }} className="p-3 bg-gray-900 border border-gray-700 hover:border-neon-blue rounded text-left">
+                                                    <div className="text-sm font-bold capitalize text-white">{b.replace('_', ' ')}</div>
+                                                </button>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Navigation */}
+                    <nav className="fixed bottom-0 left-0 right-0 h-16 bg-space-900 border-t border-gray-800 flex justify-around items-center z-40 pb-safe">
+                        <button onClick={() => setTab('colonies')} className={`flex flex-col items-center gap-1 ${tab === 'colonies' ? 'text-neon-blue' : 'text-gray-500'}`}>
+                            <Icon name="layout-grid" />
+                            <span className="text-[10px] font-bold">EMPIRE</span>
+                        </button>
+                        <button onClick={() => setTab('fleets')} className={`flex flex-col items-center gap-1 ${tab === 'fleets' ? 'text-neon-blue' : 'text-gray-500'}`}>
+                            <Icon name="navigation" />
+                            <span className="text-[10px] font-bold">FLEETS</span>
+                        </button>
+                        <button onClick={() => setTab('map')} className={`flex flex-col items-center gap-1 ${tab === 'map' ? 'text-neon-blue' : 'text-gray-500'}`}>
+                            <Icon name="radar" />
+                            <span className="text-[10px] font-bold">SCANNER</span>
+                        </button>
+                        <button onClick={onLogout} className="flex flex-col items-center gap-1 text-gray-500 hover:text-neon-red">
+                            <Icon name="log-out" />
+                            <span className="text-[10px] font-bold">LOGOUT</span>
+                        </button>
+                    </nav>
+
+                    {toast && <Toast message={toast.msg} type={toast.type} onClose={() => setToast(null)} />}
+                </div>
+            );
+        };
+
+        const App = () => {
+            const [session, setSession] = useState(null);
+
+            useEffect(() => {
+                // Initialize Lucide icons on mount
+                lucide.createIcons();
+            }, []);
+
+            if (!session) return <LoginScreen onLogin={setSession} />;
+            return <Dashboard session={session} onLogout={() => setSession(null)} />;
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
