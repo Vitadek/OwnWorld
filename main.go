@@ -61,6 +61,10 @@ func fetchGenesisFromSeed(seeds string) string {
 }
 
 func bootstrapFederation() {
+	publicAddr := os.Getenv("OWNWORLD_PUBLIC_URL")
+	if publicAddr == "" {
+		publicAddr = "http://localhost:8080"
+	}	
 	seeds := os.Getenv("SEED_NODES")
 	if seeds == "" {
 		InfoLog.Println("No SEED_NODES found. Starting as Lonely/Genesis Node.")
@@ -86,7 +90,7 @@ func bootstrapFederation() {
 			UUID:        ServerUUID,
 			GenesisHash: myGenHash,
 			PublicKey:   hex.EncodeToString(PublicKey),
-			Address:     "http://localhost:8080",
+			Address:     publicAddr,
 			Location:    ServerLoc,
 		}
 		payload, _ := json.Marshal(req)

@@ -1,8 +1,8 @@
 # --- Stage 1: Builder ---
 FROM golang:1.22-alpine AS builder
 
-# Install build tools
-RUN apk add --no-cache git build-base
+# Install build tools AND sqlite-dev (Required for linking against system lib)
+RUN apk add --no-cache git build-base sqlite-dev
 
 WORKDIR /app
 
@@ -13,15 +13,16 @@ RUN go mod download
 # Copy source code
 COPY . .
 
-# Build the binary (Statically linked for scratch/alpine compatibility)
-# -ldflags="-s -w" strips debug info to reduce size
-RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o ownworld .
+# Build the binary
+# -tags libsqlite3: Tells go-sqlite3 to link against the installed system library 
+#                   instead of compiling the incompatible bundled C source.
+RUN CGO_ENABLED=1 GOOS=linux go build -tags libsqlite3 -ldflags="-s -w" -o ownworld .
 
 # --- Stage 2: Runner ---
 FROM alpine:latest
 
-# Install certificates for HTTPS/Federation
-RUN apk add --no-cache ca-certificates sqlite
+# Install certificates and sqlite shared libraries
+RUN apk add --no-cache ca-certificates sqlite-libs
 
 WORKDIR /app
 
