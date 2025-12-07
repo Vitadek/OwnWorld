@@ -1,8 +1,10 @@
 services:
-  # The "Genesis" Node (Seed)
-  # This node initializes the galaxy identity.
+  # --- Main Registration Node (Seed) ---
+  # Allows user registration and acts as the genesis for the federation.
   seed-node:
-    build: .
+    build: 
+      context: .
+      dockerfile: container-builds/Dockerfile
     image: ownworld:latest
     container_name: ownworld-seed
     restart: unless-stopped
@@ -12,26 +14,55 @@ services:
       - ./data/seed:/app/data
     environment:
       - FEDERATION_NAME=OfficialGalaxy
-      - OWNWORLD_COMMAND_CONTROL=true
+      - OWNWORLD_COMMAND_CONTROL=true  # Enables Registration / API
       - OWNWORLD_PEERING_MODE=promiscuous
-      # Empty SEED_NODES means it starts as a leader
-      - SEED_NODES=
+      - SEED_NODES= # Empty = Genesis Leader
 
-  # A Secondary Node (Player/Resource Node)
-  # This node connects to the seed to sync the timeline.
-  player-node:
-    build: .
+  # --- Base World 1 (Resource Node) ---
+  # No registration allowed. Connects to seed.
+  world-1:
     image: ownworld:latest
-    container_name: ownworld-player
+    container_name: ownworld-base-1
     restart: unless-stopped
     ports:
       - "8081:8080"
     volumes:
-      - ./data/player:/app/data
+      - ./data/world1:/app/data
     depends_on:
       - seed-node
     environment:
       - FEDERATION_NAME=OfficialGalaxy
-      - OWNWORLD_COMMAND_CONTROL=true
-      # Connects to the seed container internally
+      - OWNWORLD_COMMAND_CONTROL=false # Disables Registration
+      - SEED_NODES=http://seed-node:8080
+
+  # --- Base World 2 (Resource Node) ---
+  world-2:
+    image: ownworld:latest
+    container_name: ownworld-base-2
+    restart: unless-stopped
+    ports:
+      - "8082:8080"
+    volumes:
+      - ./data/world2:/app/data
+    depends_on:
+      - seed-node
+    environment:
+      - FEDERATION_NAME=OfficialGalaxy
+      - OWNWORLD_COMMAND_CONTROL=false # Disables Registration
+      - SEED_NODES=http://seed-node:8080
+
+  # --- Base World 3 (Resource Node) ---
+  world-3:
+    image: ownworld:latest
+    container_name: ownworld-base-3
+    restart: unless-stopped
+    ports:
+      - "8083:8080"
+    volumes:
+      - ./data/world3:/app/data
+    depends_on:
+      - seed-node
+    environment:
+      - FEDERATION_NAME=OfficialGalaxy
+      - OWNWORLD_COMMAND_CONTROL=false # Disables Registration
       - SEED_NODES=http://seed-node:8080
